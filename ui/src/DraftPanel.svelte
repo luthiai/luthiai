@@ -1,6 +1,7 @@
 <script>
   import TimeAgo from './TimeAgo.svelte';
   import ButtonHelp from './ButtonHelp.svelte';
+  import Panel from './Panel.svelte';
   import ReviewFailure from './ReviewFailure.svelte';
   import { currentReviewRound } from './request-status.js';
   let { request, draft, action, onReject, onPublish, onClose } = $props();
@@ -15,7 +16,8 @@
   const changed = $derived(draft.head_sha !== request.head_sha || draft.revision !== request.revision ||
     draft.round_id !== request.latest_round?.id || draft.decision !== request.latest_round?.status);
   const fresh = $derived(draft.freshness === 'fresh' && !changed);
-  const decisionReason = $derived(!cleanupComplete ? 'Sandbox cleanup must finish before deciding on this draft.'
+  const decisionReason = $derived(action?.pending ? 'Wait for the current action to finish.'
+    : !cleanupComplete ? 'Sandbox cleanup must finish before deciding on this draft.'
     : confirmationInvalid ? 'Reopen the draft before making another decision.'
     : publishing ? 'Wait for the current publication to finish before making another decision.' : '');
   const publishReason = $derived(decisionReason || (!fresh
@@ -54,104 +56,105 @@
   };
 </script>
 
-<section class="draft-panel" aria-label={`Private draft for ${request.repository} #${request.number}`}>
-  <header class="panel-heading">
-    <h3>Private draft</h3>
-    <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-    <md-text-button disabled={action?.pending} onclick={onClose}>Close draft</md-text-button>
-  </header>
+<Panel title="Draft review" label={`Private draft for ${request.repository} #${request.number}`}
+  closeLabel="Close draft" closeDisabled={action?.pending} {onClose}>
+  <p>Reviewed commit <a href={`https://github.com/${draft.key.repository}/commit/${draft.head_sha}`}
+    title={draft.head_sha} target="_blank" rel="noopener noreferrer"><code>{draft.head_sha.slice(0, 7)}</code></a>
+    · {draft.model} ({draft.agent})</p>
   {#if currentReviewRound(request)?.id === draft.round_id}
     <ReviewFailure {request} />
   {/if}
-  <div class="publication-destination">
-    <h4>Publication destination</h4>
-    <p>Review destination: <a href={`https://github.com/${draft.key.repository}/pull/${draft.key.number}`} target="_blank" rel="noopener noreferrer">{draft.key.repository} #{draft.key.number}</a>
-      on <a href={`https://github.com/${draft.key.repository}/commit/${draft.head_sha}`} target="_blank" rel="noopener noreferrer">commit {draft.head_sha.slice(0, 7)}</a>.
-      {#if draft.receipt}Published by <strong>@{draft.receipt.publisher_login}</strong>.
-      {:else if draft.publisher_login}Publishing account: <strong>@{draft.publisher_login}</strong>. The server verifies this account before posting.
-      {:else}The publishing account is unavailable. Configure publisher_login and reopen this draft before publishing.{/if}</p>
-    <p>Publication posts a comment review. The agent’s recommendation does not formally approve or merge the PR.</p>
-    {#if draft.inspected_at}<p>Draft inspected <TimeAgo value={draft.inspected_at} />. {draft.freshness === 'fresh' ? 'No PR changes were found at that check.' : draft.freshness === 'stale' ? 'The PR has changed or closed.' : 'GitHub freshness could not be verified.'}</p>{/if}
-  </div>
-  <dl class="detail-list">
-    <div><dt>Round</dt><dd><code>{draft.round_id}</code></dd></div>
-    <div><dt>Reviewed head</dt><dd><code>{draft.head_sha}</code></dd></div>
-    <div><dt>Input revision</dt><dd>{draft.revision}</dd></div>
-    <div><dt>Review model</dt><dd>{draft.model}</dd></div>
-    <div><dt>Agent</dt><dd>{draft.agent}</dd></div>
-    <div><dt>Agent verdict</dt><dd>{verdictLabels[draft.verdict] ?? 'Unknown'}</dd></div>
-    <div><dt>Decision at inspection</dt><dd>{decisionLabels[draft.decision] ?? 'Unknown'}</dd></div>
-    <div><dt>Freshness</dt><dd>{freshnessLabels[draft.freshness] ?? 'Unknown'}</dd></div>
-    <div><dt>Publication body SHA-256</dt><dd><code>{draft.publication_body_sha256}</code></dd></div>
-  </dl>
-  <p>Freshness is checked against GitHub when this draft opens. Reopen it to check again.</p>
   {#if draft.freshness === 'stale'}
-    <p class="action-error" role="alert">The PR inputs changed or the PR closed. This draft is stale.</p>
+    <p class="warning" role="alert">The PR changed or closed. Publication is blocked; you can still reject this draft.</p>
   {:else if draft.freshness !== 'fresh'}
-    <p class="warning" role="status">Current PR freshness could not be verified. Recheck GitHub before publishing. You can still reject this draft.</p>
+    <p class="warning" role="status">GitHub freshness could not be verified. Reopen the draft to check again before publishing. You can still reject it.</p>
   {/if}
   {#if changed}
-    <p class="warning" role="status">Local inputs or round status changed. This view keeps the draft you opened. Reopen it to inspect current state.</p>
+    <p class="warning" role="status">The PR or review status changed. This view keeps the draft you opened. Reopen it to inspect the current state.</p>
   {/if}
+  <p>Recommendation: <strong>{verdictLabels[draft.verdict] ?? 'Unknown'}</strong></p>
   <h4>Review comments</h4>
-  <p>This is the exact GitHub publication body, including its round footer.</p>
-  <!-- Keyboard focus lets the lead scroll long draft text without a pointer. -->
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="draft-text" role="region" aria-label="Review comments" tabindex="0"><pre>{draft.publication_body}</pre></div>
+  <p>Publishing posts these comments to GitHub unchanged.</p>
+  <div class="draft-text" role="region" aria-label="Review comments"><pre>{draft.publication_body}</pre></div>
   <h4>Private lead advice</h4>
-  <p>This advice stays private when the review is published.</p>
-  <!-- svelte-ignore a11y_no_noninteractive_tabindex -->
-  <div class="draft-text" role="region" aria-label="Private lead advice" tabindex="0"><pre>{draft.lead_advice || 'No private lead advice.'}</pre></div>
+  <p>This advice stays private when you publish.</p>
+  <div class="draft-text" role="region" aria-label="Private lead advice"><pre>{draft.lead_advice || 'No private lead advice.'}</pre></div>
+  <details class="panel-details">
+    <summary>Review details</summary>
+    <dl class="detail-list">
+      <div><dt>Round</dt><dd><code>{draft.round_id}</code></dd></div>
+      <div><dt>Reviewed commit</dt><dd><code>{draft.head_sha}</code></dd></div>
+      <div><dt>Input revision</dt><dd>{draft.revision}</dd></div>
+      <div><dt>Decision at inspection</dt><dd>{decisionLabels[draft.decision] ?? 'Unknown'}</dd></div>
+      <div><dt>Freshness</dt><dd>{freshnessLabels[draft.freshness] ?? 'Unknown'}</dd></div>
+      <div><dt>Publication body SHA-256</dt><dd><code>{draft.publication_body_sha256}</code></dd></div>
+    </dl>
+    <p>Freshness is checked against GitHub when this draft opens{#if draft.inspected_at} (<TimeAgo value={draft.inspected_at} />){/if}. Reopen it to check again.</p>
+  </details>
   {#if awaitingDecision && !decisionSubmitted && !confirmation}
-    <div class="authorization-buttons">
-      <ButtonHelp text={publishReason} label="Publish draft" disabled={publishDisabled}>
-      {#snippet children(descriptionId)}
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <md-filled-button disabled={publishDisabled} aria-describedby={descriptionId}
-        onclick={() => confirmDecision('publish')}>Publish draft</md-filled-button>
-      {/snippet}
-      </ButtonHelp>
-      <ButtonHelp text={decisionReason} label="Reject draft" disabled={rejectDisabled}>
-      {#snippet children(descriptionId)}
-      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-      <md-text-button disabled={rejectDisabled} aria-describedby={descriptionId}
-        onclick={() => confirmDecision('reject')}>Reject draft</md-text-button>
-      {/snippet}
-      </ButtonHelp>
-    </div>
+    {#if draft.publisher_login}
+      <p>Publish as <strong>@{draft.publisher_login}</strong>.</p>
+    {:else}
+      <p class="warning">The publishing account is unavailable. Ask your assistant to configure it, then reopen this draft.</p>
+    {/if}
   {/if}
   {#if confirmationInvalid && !action?.pending}
     <p class="action-error" role="alert">The pending decision is no longer current. Reopen the draft before deciding.</p>
   {/if}
   {#if confirmation}
     {@const publish = confirmation.kind === 'publish'}
-    <section class="authorization-panel" aria-label={publish ? 'Confirm draft publication' : 'Confirm draft rejection'}>
-      <header class="panel-heading">
-        <h4>{publish ? 'Publish this draft?' : 'Reject this draft?'}</h4>
-        <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <md-text-button disabled={action?.pending} onclick={() => confirmation = null}>Close confirmation</md-text-button>
-      </header>
+    <Panel title={publish ? 'Publish this draft?' : 'Reject this draft?'}
+      label={publish ? 'Confirm draft publication' : 'Confirm draft rejection'}
+      closeLabel="Close confirmation" closeDisabled={action?.pending} onClose={() => confirmation = null}>
       {#if publish}
-        <p>Post to {draft.key.repository} #{draft.key.number} as <strong>@{confirmation.publisher_login}</strong>.</p>
-        <p>The exact review comments shown above, including the round footer, will be posted to GitHub as a comment review on the reviewed commit.
-          Private lead advice stays private. The server rechecks PR freshness and publisher identity before posting.</p>
+        <p>Post the review comments above unchanged to <a
+          href={`https://github.com/${confirmation.key.repository}/pull/${confirmation.key.number}`}
+          target="_blank" rel="noopener noreferrer">{confirmation.key.repository} #{confirmation.key.number}</a>
+          at commit <a href={`https://github.com/${draft.key.repository}/commit/${draft.head_sha}`}
+          title={draft.head_sha} target="_blank" rel="noopener noreferrer"><code>{draft.head_sha.slice(0, 7)}</code></a>
+          as <strong>@{confirmation.publisher_login}</strong>.</p>
+        <p>This posts a comment review without formally approving or merging the PR. Private lead advice stays private.</p>
       {:else}
-        <p>Nothing will be posted. The private draft and current authorization are preserved.
-          Model validation matching this round is cleared; another round needs a valid model choice.</p>
+        <p>Nothing will be posted. The private draft and current review permission are preserved.
+          Another review still needs a confirmed model.</p>
       {/if}
-      <dl class="detail-list">
-        <div><dt>Round to {publish ? 'publish' : 'reject'}</dt><dd><code>{confirmation.round_id}</code></dd></div>
-        <div><dt>Body SHA-256 to {publish ? 'publish' : 'reject'}</dt><dd><code>{confirmation.body_hash}</code></dd></div>
-      </dl>
-      <div class="authorization-buttons">
+      {#snippet actions()}
+        {@const disabled = action?.pending || confirmationInvalid || !awaitingDecision || !cleanupComplete || publishing || (publish && (!fresh || !draft.publisher_login))}
+        <ButtonHelp text={decisionReason || (publish ? publishReason || 'Recheck the PR and publishing account, then post these review comments unchanged.'
+          : 'Reject this draft and clear its model confirmation. Any different, later model choice is kept.')}
+          label={publish ? 'Confirm publication' : 'Confirm rejection'} {disabled}>
+        {#snippet children(descriptionId)}
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <md-filled-button disabled={action?.pending || confirmationInvalid || !awaitingDecision || !cleanupComplete || publishing || (publish && (!fresh || !draft.publisher_login))}
-          onclick={decide}>{action?.pending ? (publish ? 'Starting publication…' : 'Rejecting…') : (publish ? 'Confirm publication' : 'Confirm rejection')}</md-filled-button>
-      </div>
-    </section>
+        <md-filled-button {disabled} aria-describedby={descriptionId} onclick={decide}>
+          {action?.pending ? (publish ? 'Starting publication…' : 'Rejecting…') : (publish ? 'Confirm publication' : 'Confirm rejection')}
+        </md-filled-button>
+        {/snippet}
+        </ButtonHelp>
+      {/snippet}
+    </Panel>
   {/if}
   {#if draft.receipt}
     <p>Published as <a href={draft.receipt.url} target="_blank" rel="noopener noreferrer">GitHub review {draft.receipt.review_id}</a>
-      by {draft.receipt.publisher_login}.</p>
+      by <strong>@{draft.receipt.publisher_login}</strong>.</p>
   {/if}
-</section>
+  {#snippet actions()}
+    {#if awaitingDecision && !decisionSubmitted && !confirmation}
+      <ButtonHelp text={decisionReason || 'Keep the draft private and decide not to publish it. You will confirm before rejecting.'}
+        label="Reject draft" disabled={rejectDisabled}>
+      {#snippet children(descriptionId)}
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <md-text-button disabled={rejectDisabled} aria-describedby={descriptionId}
+        onclick={() => confirmDecision('reject')}>Reject draft</md-text-button>
+      {/snippet}
+      </ButtonHelp>
+      <ButtonHelp text={publishReason || 'Post these review comments unchanged to GitHub. You will confirm the destination and publishing account.'}
+        label="Publish draft" disabled={publishDisabled}>
+      {#snippet children(descriptionId)}
+      <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
+      <md-filled-button disabled={publishDisabled} aria-describedby={descriptionId}
+        onclick={() => confirmDecision('publish')}>Publish draft</md-filled-button>
+      {/snippet}
+      </ButtonHelp>
+    {/if}
+  {/snippet}
+</Panel>

@@ -71,6 +71,7 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - Require the lead session for private draft contents and keep them out of public
   request snapshots.
   Render agent-authored draft content as plain text.
+  Let review comments and private advice expand with the page instead of using nested scroll areas.
 - Handle Material Web menu actions through `close-menu` for mouse and keyboard activation.
   Treat Escape as dismissal and guard disabled custom-element actions.
 - Keep GitHub refresh and action confirmation panels reachable on compact PR rows,
