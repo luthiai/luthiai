@@ -449,7 +449,7 @@ h2 {
   margin-left: auto;
 }
 
-.panel > h4 {
+.panel-section-heading {
   margin: 24px 0 8px;
   font-size: 0.95rem;
 }

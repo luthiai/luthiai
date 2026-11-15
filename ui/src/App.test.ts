@@ -2085,7 +2085,7 @@ describe('review requests page', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await act(() => finishDraft({ ok: true, json: async () => draft() }));
     const panel = await screen.findByRole('region', { name: 'Private draft for owner/repo #15' });
-    expect(within(panel).getByRole('heading', { name: 'Draft review' })).toBeTruthy();
+    expect(within(panel).getByRole('heading', { name: 'Draft review', level: 3 })).toBeTruthy();
     expect(within(panel).getByRole('link', { name: 'aaaaaaa' }).getAttribute('href')).toBe(`https://github.com/owner/repo/commit/${draft().head_sha}`);
     expect(within(panel).getByRole('region', { name: 'Review comments' }).textContent).toBe(draft().publication_body);
     expect(within(panel).getByRole('region', { name: 'Private lead advice' }).textContent).toBe(draft().lead_advice);
@@ -2152,7 +2152,7 @@ describe('review requests page', () => {
     expect(screen.queryByText(/This view keeps the draft you opened/)).toBeNull();
   });
 
-  it.each(['stale', 'unknown'])('confirms the displayed draft with %s freshness and waits for SSE after rejection', async (freshness) => {
+  it.each(['stale', 'unknown'])('closes the displayed draft with %s freshness after rejection succeeds and waits for SSE', async (freshness) => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');
     let finishReject: FinishFetch;
@@ -2169,7 +2169,7 @@ describe('review requests page', () => {
     await screen.findByText(draft().lead_advice);
     await clickMaterialButton(user, container, 'Reject draft');
     const confirmation = screen.getByRole('region', { name: 'Confirm draft rejection' });
-    expect(within(confirmation).getByRole('heading', { name: 'Reject this draft?' })).toBeTruthy();
+    expect(within(confirmation).getByRole('heading', { name: 'Reject this draft?', level: 4 })).toBeTruthy();
     expect(within(confirmation).getByText(/private draft and current review permission are preserved/)).toBeTruthy();
     expect(within(confirmation).queryByText('d'.repeat(64))).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -2185,6 +2185,7 @@ describe('review requests page', () => {
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ key: draft().key, body_hash: draft().publication_body_sha256 });
     await clickMaterialButton(user, container, 'Rejecting…');
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole('region', { name: 'Private draft for owner/repo #15' })).toBeTruthy();
     if (freshness === 'unknown') {
       // SSE can report the recorded decision before its POST response arrives.
       await showSnapshot(source, [request({ authorization: 'pr_cycle', head_sha: 'b'.repeat(40), revision: 2,
@@ -2195,7 +2196,9 @@ describe('review requests page', () => {
     if (freshness === 'stale') expect(screen.getAllByText('Draft ready').length).toBeGreaterThan(0);
     expect(screen.queryByText(/The pending decision is no longer current/)).toBeNull();
     expect(screen.queryByText('Reject draft')).toBeNull();
-    expect(screen.getByText(draft().lead_advice)).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Private draft for owner/repo #15' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Confirm draft rejection' })).toBeNull();
+    expect(screen.queryByText(draft().lead_advice)).toBeNull();
     await showSnapshot(source, [request({ authorization: 'pr_cycle', head_sha: 'b'.repeat(40), revision: 2,
       latest_round: { ...readyRound, status: 'rejected' } })]);
     expect(screen.getAllByText('Rejected').length).toBeGreaterThan(0);
@@ -2203,7 +2206,7 @@ describe('review requests page', () => {
     expect(screen.queryByText('Draft ready')).toBeNull();
   });
 
-  it('confirms the inspected publication hash, starts once, and shows the receipt from SSE', async () => {
+  it.each([false, true])('closes the draft after publication is accepted and preserves progress opened before the response (%s)', async (progressBeforeResponse) => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');
     let finishPublication: FinishFetch;
@@ -2220,7 +2223,7 @@ describe('review requests page', () => {
     await screen.findByText(draft().lead_advice);
     await clickMaterialButton(user, container, 'Publish draft');
     const confirmation = screen.getByRole('region', { name: 'Confirm draft publication' });
-    expect(within(confirmation).getByRole('heading', { name: 'Publish this draft?' })).toBeTruthy();
+    expect(within(confirmation).getByRole('heading', { name: 'Publish this draft?', level: 4 })).toBeTruthy();
     expect(within(confirmation).getByRole('link', { name: 'owner/repo #15' }).getAttribute('href')).toBe('https://github.com/owner/repo/pull/15');
     expect(within(confirmation).getByRole('link', { name: 'aaaaaaa' }).getAttribute('href')).toBe(`https://github.com/owner/repo/commit/${draft().head_sha}`);
     expect(within(confirmation).getByText('@review-bot')).toBeTruthy();
@@ -2237,15 +2240,27 @@ describe('review requests page', () => {
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({ key: draft().key, body_hash: draft().publication_body_sha256, publisher_login: draft().publisher_login });
     await clickMaterialButton(user, container, 'Starting publication…');
     expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(screen.getByRole('region', { name: 'Private draft for owner/repo #15' })).toBeTruthy();
+    const publishing = request({ latest_round: { ...readyRound, status: 'publishing' },
+      publication: { round_id: 'r-example', status: 'active' } });
+    if (progressBeforeResponse) {
+      await showSnapshot(source, [publishing]);
+      await clickMaterialButton(user, container, 'Show progress');
+    }
     await act(() => finishPublication({ ok: true, status: 202, json: async () => ({ accepted: true }) }));
     await screen.findByText(/Publication accepted/);
-    expect(screen.getAllByText('Draft ready').length).toBeGreaterThan(0);
     expect(screen.queryByText('Publish draft')).toBeNull();
-    expect(screen.getByText(draft().lead_advice)).toBeTruthy();
-    await showSnapshot(source, [request({ latest_round: { ...readyRound, status: 'publishing' },
-      publication: { round_id: 'r-example', status: 'active' } })]);
+    expect(screen.queryByRole('region', { name: 'Private draft for owner/repo #15' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Confirm draft publication' })).toBeNull();
+    expect(screen.queryByText(draft().lead_advice)).toBeNull();
+    if (progressBeforeResponse) {
+      expect(screen.getByRole('region', { name: 'Review progress for owner/repo #15' })).toBeTruthy();
+    } else {
+      expect(screen.getAllByText('Draft ready').length).toBeGreaterThan(0);
+      await showSnapshot(source, [publishing]);
+      await clickMaterialButton(user, container, 'Show progress');
+    }
     expect(screen.getByRole('heading', { name: 'Publishing…' })).toBeTruthy();
-    await clickMaterialButton(user, container, 'Show progress');
     expect(screen.queryByText(/Publication needs recovery/)).toBeNull();
     await showSnapshot(source, [request({ latest_round: { ...readyRound, status: 'published', receipt: {
       review_id: 71, url: 'https://github.com/owner/repo/pull/15#pullrequestreview-71', publisher_login: 'publisher', commit_id: 'a'.repeat(40),
@@ -2358,7 +2373,8 @@ describe('review requests page', () => {
     expect(screen.queryByRole('region', { name: 'Confirm draft rejection' })).toBeNull();
     await showSnapshot(source, [request({ latest_round: round({ status: 'awaiting_decision', cleanup_pending: false, cleanup_status: 'complete' }) })]);
     expect((await clickMaterialButton(user, container, 'Reject draft')).disabled).toBe(false);
-    expect(screen.getByRole('region', { name: 'Confirm draft rejection' })).toBeTruthy();
+    const confirmation = screen.getByRole('region', { name: 'Confirm draft rejection' });
+    expect(within(confirmation).getByRole('heading', { name: 'Reject this draft?', level: 4 })).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
@@ -2385,12 +2401,13 @@ describe('review requests page', () => {
     await showSnapshot(source, [request({ latest_round: readyRound })]);
     expect((await clickMaterialButton(user, container, 'Confirm rejection')).disabled).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('region', { name: 'Confirm draft rejection' })).toBeTruthy();
+    const confirmation = screen.getByRole('region', { name: 'Confirm draft rejection' });
+    expect(within(confirmation).getByRole('heading', { name: 'Reject this draft?', level: 4 })).toBeTruthy();
     await clickMaterialButton(user, container, 'Close confirmation');
     expect((await clickMaterialButton(user, container, 'Reject draft')).disabled).toBe(true);
   });
 
-  it.each([409, 401, 'offline', 'already_rejected'])('handles rejection result %s without losing private contents unless the session ends', async (result) => {
+  it.each([409, 401, 'offline', 'already_rejected'])('keeps failed rejection decisions open and closes successful or expired-session drafts (%s)', async (result) => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');
     const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true })
@@ -2409,13 +2426,14 @@ describe('review requests page', () => {
     const message = result === 401 ? /Your session ended/ : result === 'offline' ? /Could not connect to the local API/
       : result === 'already_rejected' ? /This draft was already rejected/ : /Draft decision changed/;
     await screen.findByText(message);
-    if (result === 401) {
+    if (result === 401 || result === 'already_rejected') {
       expect(screen.queryByText(draft().lead_advice)).toBeNull();
+      expect(screen.queryByRole('region', { name: 'Private draft for owner/repo #15' })).toBeNull();
       expect(screen.queryByRole('region', { name: 'Confirm draft rejection' })).toBeNull();
-      expect(sessionStorage.getItem('luthiai-session')).toBeNull();
+      if (result === 401) expect(sessionStorage.getItem('luthiai-session')).toBeNull();
     } else {
       expect(screen.getByText(draft().lead_advice)).toBeTruthy();
-      if (result !== 'already_rejected') expect(screen.getByText('Confirm rejection')).toBeTruthy();
+      expect(screen.getByText('Confirm rejection')).toBeTruthy();
     }
   });
 

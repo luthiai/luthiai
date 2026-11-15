@@ -81,6 +81,8 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - Give each dismissible GUI panel, including confirmations, a title and a `Close <panel>` text button at the top right.
   Keep opening-button labels stable; opening an already visible panel must not dismiss it.
   Closing a panel dismisses its UI without canceling jobs or changing saved decisions.
+  Close the draft panel after a successful decision request; preserve it on failure.
+  Completion must not dismiss a different panel opened while the request was pending.
 - Reuse `ui/src/Panel.svelte` and generic layout classes when adding or revising GUI action panels.
 - Clear completed GUI operation messages when the next operation starts.
   Preserve active job and batch progress while nested operations run.
