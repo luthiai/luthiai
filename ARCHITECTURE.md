@@ -155,6 +155,8 @@ after restart, the GUI uses only progress established by the saved round.
 Publication and rejection remain separate lead decisions outside review progress.
 During startup, progress from a new job takes precedence over an earlier saved round,
 and draft actions remain hidden until that job saves its own draft.
+If startup fails before saving a round, the earlier draft and publication receipt become accessible again
+while progress and failure details remain bound to the failed job.
 Opening an action panel closes the previous panel without retargeting an inspected decision.
 Authorization binds to the recorded head and revision;
 model validation also binds to the inspected authorization and configuration.

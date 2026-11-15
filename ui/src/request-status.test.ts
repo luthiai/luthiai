@@ -57,6 +57,17 @@ describe('review progress steps', () => {
     expect(reviewProgressSteps(snapshot).map((step) => step.state)).toEqual(states);
   });
 
+  it.each([
+    { dispatched_at: undefined, phase: 'rechecking_inputs', states: ['done', 'attention', 'pending', 'pending'] },
+    { dispatched_at: 10, phase: 'running_reviewer', states: ['done', 'done', 'attention', 'pending'] },
+  ])('keeps dispatch failure progress consistent after restart with dispatched_at=$dispatched_at', ({ dispatched_at, phase, states }) => {
+    const latest_round = { ...round, status: 'failed', failure: 'dispatch', dispatched_at,
+      cleanup_pending: false, cleanup_status: 'complete' };
+    expect(reviewProgressSteps({ latest_round, run: { ...run, status: 'failed', phase } }).map((step) => step.state))
+      .toEqual(states);
+    expect(reviewProgressSteps({ latest_round }).map((step) => step.state)).toEqual(states);
+  });
+
   it.each(['publishing', 'publication_unknown', 'published', 'rejected'])('keeps the review complete while the later draft decision is %s', (status) => {
     const steps = reviewProgressSteps({ latest_round: { ...cleaned, status },
       publication: { round_id: round.id, status: 'unknown' } });
@@ -77,7 +88,6 @@ describe('review progress steps', () => {
     expect(reviewProgressSteps({ latest_round: running, run: { ...run, reviewer, round_id: 'r-old', status: 'failed' } })[2].label)
       .toBe('Run reviewer');
   });
-
 });
 
 describe('review next steps', () => {

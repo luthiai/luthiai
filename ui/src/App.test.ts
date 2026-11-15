@@ -1979,6 +1979,44 @@ describe('review requests page', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it.each(['published', 'rejected'])('restores the previous %s draft and receipt after startup fails without completing the new review steps', async (status) => {
+    const user = userEvent.setup();
+    sessionStorage.setItem('luthiai-session', 'saved-token');
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => draft({ decision: status }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(App);
+    const source = FakeEventSource.instances[0];
+    const latest_round = round({ status, cleanup_pending: false, cleanup_status: 'complete',
+      receipt: status === 'published' ? {
+        review_id: 71, url: 'https://github.com/owner/repo/pull/15#pullrequestreview-71',
+        publisher_login: 'publisher', commit_id: 'a'.repeat(40), published_at: 300,
+      } : null });
+    await showSnapshot(source, [request({ latest_round, run: { status: 'starting', round_id: null } })]);
+    await clickMaterialButton(user, container, 'Show progress');
+    expect(screen.queryByText('Read draft')).toBeNull();
+    await showSnapshot(source, [request({ latest_round,
+      run: { status: 'failed', round_id: null, failure: 'stale_preparation' } })]);
+    const progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
+    const steps = within(progress).getByRole('list', { name: 'Review steps' });
+    expect(steps.querySelectorAll('[data-state="attention"]')).toHaveLength(1);
+    expect(steps.querySelectorAll('[data-state="done"]')).toHaveLength(0);
+    expect(within(progress).getByRole('alert').textContent).toContain('Prepare and inspect the review again');
+    if (status === 'published') {
+      const receipt = within(progress).getByRole('link', { name: 'GitHub review 71' });
+      expect(receipt.getAttribute('href')).toBe(latest_round.receipt.url);
+      expect(receipt.closest('p').textContent).toContain('Previously published');
+    }
+    expect(screen.getByText('Read saved draft')).toBeTruthy();
+    await clickMaterialButton(user, progress, 'Read draft');
+    const panel = await screen.findByRole('region', { name: 'Private draft for owner/repo #15' });
+    expect(within(panel).getByText(status === 'published' ? 'Published' : 'Rejected')).toBeTruthy();
+    expect(within(panel).queryByRole('alert')).toBeNull();
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/drafts/r-example?repository=owner%2Frepo&number=15');
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer saved-token');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     { title: 'Publication failed', error: 'Safe publication failure.',
       publication: { round_id: 'r-example', status: 'failed', error: 'Safe publication failure.' } },
