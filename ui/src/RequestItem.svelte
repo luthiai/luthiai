@@ -383,7 +383,8 @@
         {confirmedReviewMode} bind:reviewMode bind:selectedModel onRefresh={prepareReview} onValidate={validateModel} onClose={() => openPanel(null)} />
     {/if}
     {#if panel === 'draft' && draft}
-      <DraftPanel {request} {draft} {action} onReject={onRejectDraft} onPublish={onPublishDraft} onClose={() => openPanel(null)} />
+      <DraftPanel {request} {draft} {action} onReject={onRejectDraft} onPublish={onPublishDraft}
+        onClose={() => { if (panel === 'draft') openPanel(null); }} />
     {/if}
     {/if}
   {/if}

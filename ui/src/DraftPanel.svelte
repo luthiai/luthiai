@@ -35,7 +35,10 @@
   function confirmDecision(kind) {
     if (!awaitingDecision || !cleanupComplete || publishing || action?.pending || decisionSubmitted || confirmationInvalid ||
       (kind === 'publish' && (!fresh || !draft.publisher_login))) return;
-    confirmation = { kind, key: { ...draft.key }, round_id: draft.round_id, body_hash: draft.publication_body_sha256, publisher_login: draft.publisher_login };
+    confirmation = {
+      kind, key: { ...draft.key }, round_id: draft.round_id, head_sha: draft.head_sha,
+      body_hash: draft.publication_body_sha256, publisher_login: draft.publisher_login,
+    };
   }
 
   async function decide() {
@@ -46,6 +49,7 @@
       decisionSubmitted = true;
       confirmation = null;
       confirmationInvalid = false;
+      onClose();
     }
   }
   const freshnessLabels = { fresh: 'Fresh at inspection', stale: 'Stale', unknown: 'Unknown' };
@@ -73,10 +77,10 @@
     <p class="warning" role="status">The PR or review status changed. This view keeps the draft you opened. Reopen it to inspect the current state.</p>
   {/if}
   <p>Recommendation: <strong>{verdictLabels[draft.verdict] ?? 'Unknown'}</strong></p>
-  <h4>Review comments</h4>
+  <h4 class="panel-section-heading">Review comments</h4>
   <p>Publishing posts these comments to GitHub unchanged.</p>
   <div class="draft-text" role="region" aria-label="Review comments"><pre>{draft.publication_body}</pre></div>
-  <h4>Private lead advice</h4>
+  <h4 class="panel-section-heading">Private lead advice</h4>
   <p>This advice stays private when you publish.</p>
   <div class="draft-text" role="region" aria-label="Private lead advice"><pre>{draft.lead_advice || 'No private lead advice.'}</pre></div>
   <details class="panel-details">
@@ -105,13 +109,14 @@
     {@const publish = confirmation.kind === 'publish'}
     <Panel title={publish ? 'Publish this draft?' : 'Reject this draft?'}
       label={publish ? 'Confirm draft publication' : 'Confirm draft rejection'}
+      headingLevel={4}
       closeLabel="Close confirmation" closeDisabled={action?.pending} onClose={() => confirmation = null}>
       {#if publish}
         <p>Post the review comments above unchanged to <a
           href={`https://github.com/${confirmation.key.repository}/pull/${confirmation.key.number}`}
           target="_blank" rel="noopener noreferrer">{confirmation.key.repository} #{confirmation.key.number}</a>
-          at commit <a href={`https://github.com/${draft.key.repository}/commit/${draft.head_sha}`}
-          title={draft.head_sha} target="_blank" rel="noopener noreferrer"><code>{draft.head_sha.slice(0, 7)}</code></a>
+          at commit <a href={`https://github.com/${confirmation.key.repository}/commit/${confirmation.head_sha}`}
+          title={confirmation.head_sha} target="_blank" rel="noopener noreferrer"><code>{confirmation.head_sha.slice(0, 7)}</code></a>
           as <strong>@{confirmation.publisher_login}</strong>.</p>
         <p>This posts a comment review without formally approving or merging the PR. Private lead advice stays private.</p>
       {:else}
