@@ -2085,12 +2085,18 @@ describe('review requests page', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await act(() => finishDraft({ ok: true, json: async () => draft() }));
     const panel = await screen.findByRole('region', { name: 'Private draft for owner/repo #15' });
+    expect(within(panel).getByRole('heading', { name: 'Draft review' })).toBeTruthy();
+    expect(within(panel).getByRole('link', { name: 'aaaaaaa' }).getAttribute('href')).toBe(`https://github.com/owner/repo/commit/${draft().head_sha}`);
     expect(within(panel).getByRole('region', { name: 'Review comments' }).textContent).toBe(draft().publication_body);
     expect(within(panel).getByRole('region', { name: 'Private lead advice' }).textContent).toBe(draft().lead_advice);
     expect(within(panel).getByText('Accept with nits')).toBeTruthy();
-    expect(within(panel).getByText('Fresh at inspection')).toBeTruthy();
-    expect(within(panel).getByText('a'.repeat(40))).toBeTruthy();
-    expect(within(panel).getByText('d'.repeat(64))).toBeTruthy();
+    const details = within(panel).getByText('Review details').closest('details');
+    expect(details.open).toBe(false);
+    await user.click(within(panel).getByText('Review details'));
+    expect(details.open).toBe(true);
+    expect(within(details).getByText('Fresh at inspection')).toBeTruthy();
+    expect(within(details).getByText('a'.repeat(40))).toBeTruthy();
+    expect(within(details).getByText('d'.repeat(64))).toBeTruthy();
     expect(within(panel).getByRole('region', { name: 'Review comments' }).querySelector('script, img, a')).toBeNull();
     expect(within(panel).getByRole('region', { name: 'Private lead advice' }).querySelector('script, img, a')).toBeNull();
     expect(within(panel).getByText(/This advice stays private/)).toBeTruthy();
@@ -2100,8 +2106,8 @@ describe('review requests page', () => {
   });
 
   it.each([
-    ['stale', 'The PR inputs changed or the PR closed. This draft is stale.'],
-    ['unknown', 'Current PR freshness could not be verified. Recheck GitHub before publishing. You can still reject this draft.'],
+    ['stale', 'The PR changed or closed. Publication is blocked; you can still reject this draft.'],
+    ['unknown', 'GitHub freshness could not be verified. Reopen the draft to check again before publishing. You can still reject it.'],
   ])('allows inspecting a draft with %s freshness and explains its limits', async (freshness, message) => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');
@@ -2163,9 +2169,9 @@ describe('review requests page', () => {
     await screen.findByText(draft().lead_advice);
     await clickMaterialButton(user, container, 'Reject draft');
     const confirmation = screen.getByRole('region', { name: 'Confirm draft rejection' });
-    expect(within(confirmation).getByText('r-example')).toBeTruthy();
-    expect(within(confirmation).getByText('d'.repeat(64))).toBeTruthy();
-    expect(within(confirmation).getByText(/private draft and current authorization are preserved/)).toBeTruthy();
+    expect(within(confirmation).getByRole('heading', { name: 'Reject this draft?' })).toBeTruthy();
+    expect(within(confirmation).getByText(/private draft and current review permission are preserved/)).toBeTruthy();
+    expect(within(confirmation).queryByText('d'.repeat(64))).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await clickMaterialButton(user, container, 'Close confirmation');
     expect(screen.queryByRole('region', { name: 'Confirm draft rejection' })).toBeNull();
@@ -2214,8 +2220,11 @@ describe('review requests page', () => {
     await screen.findByText(draft().lead_advice);
     await clickMaterialButton(user, container, 'Publish draft');
     const confirmation = screen.getByRole('region', { name: 'Confirm draft publication' });
-    expect(within(confirmation).getByText('r-example')).toBeTruthy();
-    expect(within(confirmation).getByText('d'.repeat(64))).toBeTruthy();
+    expect(within(confirmation).getByRole('heading', { name: 'Publish this draft?' })).toBeTruthy();
+    expect(within(confirmation).getByRole('link', { name: 'owner/repo #15' }).getAttribute('href')).toBe('https://github.com/owner/repo/pull/15');
+    expect(within(confirmation).getByRole('link', { name: 'aaaaaaa' }).getAttribute('href')).toBe(`https://github.com/owner/repo/commit/${draft().head_sha}`);
+    expect(within(confirmation).getByText('@review-bot')).toBeTruthy();
+    expect(within(confirmation).queryByText('d'.repeat(64))).toBeNull();
     expect(within(confirmation).getByText(/Private lead advice stays private/)).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     await clickMaterialButton(user, container, 'Close confirmation');
@@ -2285,7 +2294,8 @@ describe('review requests page', () => {
     await clickMaterialButton(user, container, 'Publish draft');
     await showSnapshot(source, [{ ...initial, ...change }]);
     expect((await clickMaterialButton(user, container, 'Confirm publication')).disabled).toBe(true);
-    expect(screen.getByRole('region', { name: 'Confirm draft publication' }).textContent).toContain('r-example');
+    const confirmation = screen.getByRole('region', { name: 'Confirm draft publication' });
+    expect(within(confirmation).getByRole('link', { name: 'aaaaaaa' }).getAttribute('href')).toBe(`https://github.com/owner/repo/commit/${draft().head_sha}`);
     await showSnapshot(source, [initial]);
     expect((await clickMaterialButton(user, container, 'Confirm publication')).disabled).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -2375,7 +2385,7 @@ describe('review requests page', () => {
     await showSnapshot(source, [request({ latest_round: readyRound })]);
     expect((await clickMaterialButton(user, container, 'Confirm rejection')).disabled).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole('region', { name: 'Confirm draft rejection' }).textContent).toContain('r-example');
+    expect(screen.getByRole('region', { name: 'Confirm draft rejection' })).toBeTruthy();
     await clickMaterialButton(user, container, 'Close confirmation');
     expect((await clickMaterialButton(user, container, 'Reject draft')).disabled).toBe(true);
   });
