@@ -5,7 +5,7 @@
   import TimeAgo from './TimeAgo.svelte';
   import ButtonHelp from './ButtonHelp.svelte';
   import Panel from './Panel.svelte';
-  import { currentReviewRound, reviewSituation } from './request-status.js';
+  import { currentReviewRound, reviewSituation, reviewStartupFailed } from './request-status.js';
   import { tick } from 'svelte';
 
   let { request, signedIn, checkingSession, action, refreshQueued = false, onRefresh, onAuthorize, onRevoke, onUnmanage, onPrepare, onValidate, onRun, onViewDraft, onRejectDraft, onPublishDraft } = $props();
@@ -87,7 +87,7 @@
     : situation.action === 'run' ? `${reviewMode === 'full' ? 'Start a full PR review.'
       : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'} ${situation.message}`
     : situation.message);
-  const draftRound = $derived(request.run?.status === 'failed' && !request.run.round_id
+  const draftRound = $derived(reviewStartupFailed(request)
     ? request.latest_round : currentReviewRound(request));
   const hasDraft = $derived(['awaiting_decision', 'publishing', 'publication_unknown', 'published', 'rejected']
     .includes(draftRound?.status));

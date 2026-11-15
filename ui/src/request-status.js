@@ -7,11 +7,15 @@ export function preparationOutdated(request, preparation, invalid = false) {
         preparation.models.find((choice) => choice.model === preparation.validated_model)?.agent !== validation.agent));
 }
 
+export function reviewStartupFailed(request) {
+  return request.run?.status === 'failed' && !request.run.round_id;
+}
+
 export function currentReviewRound(request) {
   const run = request.run;
   // A new job can be preparing, or fail before saving a round, while an earlier round remains saved.
   return (['starting', 'running'].includes(run?.status) && run.round_id !== request.latest_round?.id) ||
-    (run?.status === 'failed' && !run.round_id)
+    reviewStartupFailed(request)
     ? null : request.latest_round;
 }
 
@@ -61,7 +65,7 @@ export function reviewFailure(request) {
   const publication = round && request.publication?.round_id === round.id ? request.publication : null;
   const failedRun = request.run?.status === 'failed' && (!request.run.round_id || request.run.round_id === round?.id);
   // A job without a round failed during startup, after any previous completed round.
-  if (['published', 'rejected'].includes(round?.status) && !(failedRun && !request.run.round_id)) return null;
+  if (['published', 'rejected'].includes(round?.status) && !reviewStartupFailed(request)) return null;
   if (publication && ['failed', 'unknown'].includes(publication.status) &&
     ['awaiting_decision', 'publishing', 'publication_unknown'].includes(round.status)) {
     return {
