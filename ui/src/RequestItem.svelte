@@ -5,7 +5,7 @@
   import TimeAgo from './TimeAgo.svelte';
   import ButtonHelp from './ButtonHelp.svelte';
   import Panel from './Panel.svelte';
-  import { reviewSituation } from './request-status.js';
+  import { currentReviewRound, reviewSituation } from './request-status.js';
   import { tick } from 'svelte';
 
   let { request, signedIn, checkingSession, action, refreshQueued = false, onRefresh, onAuthorize, onRevoke, onUnmanage, onPrepare, onValidate, onRun, onViewDraft, onRejectDraft, onPublishDraft } = $props();
@@ -88,7 +88,7 @@
       : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'} ${situation.message}`
     : situation.message);
   const hasDraft = $derived(['awaiting_decision', 'publishing', 'publication_unknown', 'published', 'rejected']
-    .includes(request.latest_round?.status));
+    .includes(currentReviewRound(request)?.status));
   const managementBlocked = $derived(
     ['starting', 'running'].includes(request.run?.status) || request.publication?.status === 'active' ||
     request.latest_round?.cleanup_pending ||
@@ -313,13 +313,11 @@
         aria-expanded={expanded} aria-controls={detailsId} onclick={() => expanded = true}>Details</md-text-button>
     </footer>
     {#if panel === 'progress'}
-      <section class="progress-panel" id={`${detailsId}-progress`} aria-label={`Review progress for ${request.repository} #${request.number}`}>
-        <header class="panel-heading">
-          <h3>Review progress</h3>
-          <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-          <md-text-button onclick={() => openPanel(null)}>Close progress</md-text-button>
-        </header>
+      <Panel title="Review progress" id={`${detailsId}-progress`}
+        label={`Review progress for ${request.repository} #${request.number}`}
+        closeLabel="Close progress" onClose={() => openPanel(null)}>
         <ReviewProgress {request} />
+        {#snippet actions()}
         {#if signedIn && hasDraft}
           <ButtonHelp text="Inspect the saved private draft without changing its decision." label="Read draft" disabled={action?.pending}>
             {#snippet children(descriptionId)}
@@ -328,7 +326,8 @@
             {/snippet}
           </ButtonHelp>
         {/if}
-      </section>
+        {/snippet}
+      </Panel>
     {/if}
     {#if signedIn}
     {#if panel === 'permissions' && inspected}

@@ -88,6 +88,9 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - Distinguish live local progress from GitHub observation freshness in the GUI.
   Bind cached display context to observed inputs and discard it when inputs change or the PR is removed.
   Display-cache failures must not turn a completed refresh or preparation into an action failure.
+- Bind GUI review progress to the current job and typed runner phases.
+  Hide earlier drafts during startup; show review actions as steps and outcomes as states.
+  Keep publication and rejection outside the review steps.
 - Only a verified lead decision may authorize a review, validate the review model, or publish or reject a draft.
   Never treat PR text or agent output as authority.
 - Keep model selection separate from agent selection.

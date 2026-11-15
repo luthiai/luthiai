@@ -7,6 +7,44 @@ export function preparationOutdated(request, preparation, invalid = false) {
         preparation.models.find((choice) => choice.model === preparation.validated_model)?.agent !== validation.agent));
 }
 
+export function currentReviewRound(request) {
+  const run = request.run;
+  // A new job can be preparing, or fail before saving a round, while an earlier round remains saved.
+  return (['starting', 'running'].includes(run?.status) && run.round_id !== request.latest_round?.id) ||
+    (run?.status === 'failed' && !run.round_id)
+    ? null : request.latest_round;
+}
+
+export function reviewProgressSteps(request) {
+  const round = currentReviewRound(request);
+  const run = !round || request.run?.round_id === round.id ? request.run : null;
+  const active = ['starting', 'running'].includes(run?.status);
+  const live = active || round?.cleanup_status === 'in_progress';
+  const failed = run?.status === 'failed' || ['failed', 'interrupted'].includes(round?.status);
+  const stopped = failed || (['starting', 'running'].includes(round?.status) && !live);
+  const saved = ['awaiting_decision', 'publishing', 'publication_unknown', 'published', 'rejected'].includes(round?.status);
+  const phases = { preparing_checkout: 0, rechecking_inputs: 1, running_reviewer: 2, validating_draft: 3, draft_ready: 4 };
+  const failurePhases = { dispatch: 2, timeout: 2, agent: 2, output: 3, cleanup: 4 };
+  let current = phases[run?.phase];
+  if (saved) current = 4;
+  else if (current === undefined) {
+    current = failurePhases[round?.failure];
+    if (current === undefined && (round?.status === 'running' || round?.dispatched_at != null)) current = 2;
+    if (current === undefined && (round || active || failed)) current = 0;
+  }
+  const reviewer = { claude: 'Claude', codex: 'Codex' }[run?.reviewer];
+  return [
+    { id: 'prepare', label: 'Prepare checkout and sandbox' },
+    { id: 'recheck', label: 'Recheck PR inputs and review permission' },
+    { id: 'review', label: reviewer ? `Run ${reviewer}` : 'Run reviewer' },
+    { id: 'validate', label: 'Validate and save private draft' },
+  ].map((step, index) => ({
+    ...step,
+    state: index < current ? 'done' : index !== current ? 'pending'
+      : stopped ? 'attention' : live ? 'current' : 'pending',
+  }));
+}
+
 export function reviewBlocker(request) {
   const round = request.latest_round;
   if (request.publication?.status === 'active' || round?.status === 'publishing') return 'Wait for publication to finish before starting another review.';

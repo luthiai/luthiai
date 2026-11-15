@@ -1357,7 +1357,11 @@ mod tests {
             key: &PrKey,
             inspected: &review_commands::InspectedRun,
             _: Arc<std::sync::atomic::AtomicBool>,
-            _: &mut dyn FnMut(&luthiai::review::RoundId),
+            _: &mut dyn FnMut(
+                &luthiai::review::RoundId,
+                luthiai::review::ReviewPhase,
+                luthiai::config::AgentKind,
+            ),
         ) -> Result<(), review_commands::RunError> {
             let expected = if key.number() == 15 {
                 ReviewMode::Auto
@@ -1416,8 +1420,13 @@ mod tests {
         key: &PrKey,
         inspected: &review_commands::InspectedRun,
         cancelled: Arc<std::sync::atomic::AtomicBool>,
-        started: &mut dyn FnMut(&luthiai::review::RoundId),
+        progress: &mut dyn FnMut(
+            &luthiai::review::RoundId,
+            luthiai::review::ReviewPhase,
+            luthiai::config::AgentKind,
+        ),
     ) -> Result<(), review_commands::RunError> {
+        use luthiai::review::ReviewPhase;
         use review_commands::{InspectionError, RunError};
         assert_eq!(config_file, state_file.with_extension("config.json"));
         assert_eq!(inspected.selection().model().as_str(), "model-beta");
@@ -1436,9 +1445,24 @@ mod tests {
         if key.number() == 17 {
             return Err(RunError::Inspection(InspectionError::RulesChanged));
         }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        for phase in ["begin", "finish"] {
-            while !state_file.with_extension(phase).exists() {
+        let phases: &[(&str, Option<ReviewPhase>)] = if key.number() == 18 {
+            &[
+                ("begin", Some(ReviewPhase::PreparingCheckout)),
+                ("recheck", Some(ReviewPhase::RecheckingInputs)),
+                ("review", Some(ReviewPhase::RunningReviewer)),
+                ("validate", Some(ReviewPhase::ValidatingDraft)),
+                ("draft", Some(ReviewPhase::DraftReady)),
+                ("finish", None),
+            ]
+        } else {
+            &[
+                ("begin", Some(ReviewPhase::PreparingCheckout)),
+                ("finish", None),
+            ]
+        };
+        let deadline = Instant::now() + Duration::from_secs(30);
+        for &(marker, phase) in phases {
+            while !state_file.with_extension(marker).exists() {
                 if cancelled.load(std::sync::atomic::Ordering::Relaxed) || Instant::now() > deadline
                 {
                     std::fs::write(state_file.with_extension("cancelled"), b"").unwrap();
@@ -1448,8 +1472,12 @@ mod tests {
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
-            if phase == "begin" {
-                started(&luthiai::review::RoundId::new("r-gui").unwrap());
+            if let Some(phase) = phase {
+                progress(
+                    &luthiai::review::RoundId::new("r-gui").unwrap(),
+                    phase,
+                    luthiai::config::AgentKind::Claude,
+                );
             }
         }
         Ok(())
@@ -1473,7 +1501,7 @@ mod tests {
     fn run_jobs_survive_browser_disconnects_block_duplicates_and_stream_progress() {
         let directory = tempfile::tempdir().unwrap();
         let state_file = directory.path().join("state.json");
-        let key = PrKey::new("owner/repo", 15).unwrap();
+        let key = PrKey::new("owner/repo", 18).unwrap();
         let mut state = State::default();
         state
             .record_request(key.clone(), HeadSha::new("a".repeat(40)).unwrap())
@@ -1495,7 +1523,9 @@ mod tests {
             runs.clone(),
         );
         test_runtime().block_on(async {
-            let body = validation_body().to_string();
+            let mut body = validation_body();
+            body["key"]["number"] = 18.into();
+            let body = body.to_string();
             let response = app
                 .clone()
                 .oneshot(json_post(
@@ -1525,7 +1555,7 @@ mod tests {
                     "/api/requests/unmanage",
                     Some("http://localhost:8080"),
                     Some("test-token"),
-                    r#"{"repository":"owner/repo","number":15}"#,
+                    r#"{"repository":"owner/repo","number":18}"#,
                 ))
                 .await
                 .unwrap();
@@ -1555,6 +1585,8 @@ mod tests {
             std::fs::write(state_file.with_extension("begin"), b"").unwrap();
             let running = wait_for_run(&runs, &key, "running").await;
             assert_eq!(running["round_id"], "r-gui");
+            assert_eq!(running["phase"], "preparing_checkout");
+            assert_eq!(running["reviewer"], "claude");
             let response = app
                 .oneshot(
                     Request::builder()
@@ -1576,8 +1608,27 @@ mod tests {
                     .unwrap()
                     .contains(r#""run":{"status":"running","round_id":"r-gui""#)
             );
+            for (marker, phase) in [
+                ("recheck", "rechecking_inputs"),
+                ("review", "running_reviewer"),
+                ("validate", "validating_draft"),
+                ("draft", "draft_ready"),
+            ] {
+                std::fs::write(state_file.with_extension(marker), b"").unwrap();
+                let update = tokio::time::timeout(Duration::from_secs(3), events.next())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+                let update = String::from_utf8(update.to_vec()).unwrap();
+                assert!(update.contains(&format!(r#""phase":"{phase}""#)));
+                let summary = serde_json::to_value(runs.summary(&key).unwrap()).unwrap();
+                assert_eq!(summary["phase"], phase);
+                assert_eq!(summary["reviewer"], "claude");
+            }
             std::fs::write(state_file.with_extension("finish"), b"").unwrap();
-            wait_for_run(&runs, &key, "finished").await;
+            let finished = wait_for_run(&runs, &key, "finished").await;
+            assert_eq!(finished["phase"], "draft_ready");
             let finished = tokio::time::timeout(Duration::from_secs(3), events.next())
                 .await
                 .unwrap()
@@ -1815,6 +1866,8 @@ mod tests {
                 let failed = wait_for_run(&runs, &key, "failed").await;
                 assert_eq!(failed["failure"], reason);
                 assert!(failed["round_id"].is_null());
+                assert!(failed["phase"].is_null());
+                assert!(failed["reviewer"].is_null());
                 assert!(!failed.to_string().contains("private"));
             }
             let response = app
@@ -1828,6 +1881,9 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::ACCEPTED);
+            std::fs::write(state_file.with_extension("begin"), b"").unwrap();
+            let active_key = PrKey::new("owner/repo", 15).unwrap();
+            wait_for_run(&runs, &active_key, "running").await;
             let stream = app
                 .clone()
                 .oneshot(
@@ -1852,7 +1908,9 @@ mod tests {
                     .unwrap()
                     .is_none()
             );
-            wait_for_run(&runs, &PrKey::new("owner/repo", 15).unwrap(), "failed").await;
+            let failed = wait_for_run(&runs, &active_key, "failed").await;
+            assert_eq!(failed["round_id"], "r-gui");
+            assert_eq!(failed["phase"], "preparing_checkout");
             assert!(state_file.with_extension("cancelled").exists());
             let response = app
                 .oneshot(json_post(

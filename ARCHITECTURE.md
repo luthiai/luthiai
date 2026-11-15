@@ -147,6 +147,14 @@ Neither recovery automatically reruns the reviewer or retries the post.
 Decision panels retain the inputs the lead inspected across live updates.
 Each PR shows one primary workflow action, with technical state behind Details.
 Progress and recovery instructions open in a separate activity panel without expanding the PR metadata.
+Its step list follows typed runner phases for checkout and sandbox preparation,
+input and permission rechecks, reviewer execution, and draft validation and saving.
+Draft readiness appears as the PR's status rather than an additional step.
+These phases stay in the server's live job summary;
+after restart, the GUI uses only progress established by the saved round.
+Publication and rejection remain separate lead decisions outside review progress.
+During startup, progress from a new job takes precedence over an earlier saved round,
+and draft actions remain hidden until that job saves its own draft.
 Opening an action panel closes the previous panel without retargeting an inspected decision.
 Authorization binds to the recorded head and revision;
 model validation also binds to the inspected authorization and configuration.
