@@ -185,8 +185,6 @@ pub enum FailureKind {
     Timeout,
     Agent,
     Output,
-    /// Retained so rounds written by earlier runners remain readable.
-    Cleanup,
     Recovery,
 }
 

@@ -24,7 +24,7 @@ export function reviewProgressSteps(request) {
   const stopped = failed || (['starting', 'running'].includes(round?.status) && !live);
   const saved = ['awaiting_decision', 'publishing', 'publication_unknown', 'published', 'rejected'].includes(round?.status);
   const phases = { preparing_checkout: 0, rechecking_inputs: 1, running_reviewer: 2, validating_draft: 3, draft_ready: 4 };
-  const failurePhases = { dispatch: 2, timeout: 2, agent: 2, output: 3, cleanup: 4 };
+  const failurePhases = { dispatch: round?.dispatched_at == null ? 1 : 2, timeout: 2, agent: 2, output: 3 };
   let current = phases[run?.phase];
   if (saved) current = 4;
   else if (current === undefined) {
@@ -82,7 +82,7 @@ export function reviewFailure(request) {
     const labels = {
       preflight: 'Startup checks failed', checkout: 'Checkout failed', sandbox_create: 'Sandbox creation failed',
       dispatch: 'Agent dispatch failed', timeout: 'Agent timed out', agent: 'Agent failed',
-      output: 'Draft validation failed', cleanup: 'Sandbox cleanup failed', recovery: 'Review interrupted',
+      output: 'Draft validation failed', recovery: 'Review interrupted',
     };
     messages.push(`${labels[round.failure] ?? 'Review failed'}. Prepare again after resolving the failure and any pending cleanup.`);
   }

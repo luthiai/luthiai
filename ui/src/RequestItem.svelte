@@ -87,8 +87,10 @@
     : situation.action === 'run' ? `${reviewMode === 'full' ? 'Start a full PR review.'
       : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'} ${situation.message}`
     : situation.message);
+  const draftRound = $derived(request.run?.status === 'failed' && !request.run.round_id
+    ? request.latest_round : currentReviewRound(request));
   const hasDraft = $derived(['awaiting_decision', 'publishing', 'publication_unknown', 'published', 'rejected']
-    .includes(currentReviewRound(request)?.status));
+    .includes(draftRound?.status));
   const managementBlocked = $derived(
     ['starting', 'running'].includes(request.run?.status) || request.publication?.status === 'active' ||
     request.latest_round?.cleanup_pending ||
@@ -169,7 +171,7 @@
 
   async function viewDraft() {
     if (!signedIn || !hasDraft || action?.pending) return;
-    const roundId = request.latest_round.id;
+    const roundId = draftRound.id;
     openPanel('draft');
     draft = null;
     const result = await onViewDraft(roundId);

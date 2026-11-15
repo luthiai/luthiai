@@ -2,6 +2,7 @@
   import TimeAgo from './TimeAgo.svelte';
   import ButtonHelp from './ButtonHelp.svelte';
   import ReviewFailure from './ReviewFailure.svelte';
+  import { currentReviewRound } from './request-status.js';
   let { request, draft, action, onReject, onPublish, onClose } = $props();
   let confirmation = $state(null);
   let confirmationInvalid = $state(false);
@@ -59,7 +60,7 @@
     <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
     <md-text-button disabled={action?.pending} onclick={onClose}>Close draft</md-text-button>
   </header>
-  {#if request.latest_round?.id === draft.round_id}
+  {#if currentReviewRound(request)?.id === draft.round_id}
     <ReviewFailure {request} />
   {/if}
   <div class="publication-destination">

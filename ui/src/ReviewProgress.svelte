@@ -6,6 +6,7 @@
   const run = $derived(request.run);
   const active = $derived(run?.status === 'starting' || run?.status === 'running');
   const round = $derived(currentReviewRound(request));
+  const receipt = $derived((round ?? (run?.status === 'failed' && !run.round_id ? request.latest_round : null))?.receipt);
   const publication = $derived(request.publication?.round_id === round?.id ? request.publication : null);
   const reviewActive = $derived(active ||
     (['starting', 'running'].includes(round?.status) && round?.cleanup_status === 'in_progress'));
@@ -27,18 +28,18 @@
   <p role="status">Verifying the publishing account and PR, then posting to GitHub…</p>
 {:else if round?.status === 'publication_unknown' || round?.status === 'publishing'}
   <p class="warning" role="alert">Publication needs recovery. Check GitHub before deciding again; the GUI will not retry the post.</p>
-  <p>Ask your assistant to recover publication:
+  <p>Recover publication with:
     <code>luthiai recover-publication {request.repository} {request.number} --round {round.id}</code>
   </p>
 {:else if round?.status === 'rejected'}
   <p>Draft rejected. Nothing was posted.</p>
 {/if}
 
-{#if round?.receipt}
-  <p>Published <TimeAgo value={round.receipt.published_at} /> as <a href={round.receipt.url} target="_blank" rel="noopener noreferrer">GitHub review {round.receipt.review_id}</a>
-    by <strong>@{round.receipt.publisher_login}</strong>, tied to commit <a
-      href={`https://github.com/${request.repository}/commit/${round.receipt.commit_id}`}
-      title={round.receipt.commit_id} target="_blank" rel="noopener noreferrer"><code>{round.receipt.commit_id.slice(0, 7)}</code></a>.</p>
+{#if receipt}
+  <p>{round ? 'Published' : 'Previously published'} <TimeAgo value={receipt.published_at} /> as <a href={receipt.url} target="_blank" rel="noopener noreferrer">GitHub review {receipt.review_id}</a>
+    by <strong>@{receipt.publisher_login}</strong>, tied to commit <a
+      href={`https://github.com/${request.repository}/commit/${receipt.commit_id}`}
+      title={receipt.commit_id} target="_blank" rel="noopener noreferrer"><code>{receipt.commit_id.slice(0, 7)}</code></a>.</p>
 {/if}
 {#if publication?.status === 'published' && publication.freshness === 'stale'}
   <p class="warning">PR inputs changed after publication. The review remains tied to its original commit.</p>
@@ -55,7 +56,7 @@
 {/if}
 {#if round?.cleanup_status === 'needs_attention'}
   <p class="warning">The review environment needs recovery.</p>
-  <p>Ask your assistant to recover the review environment:
+  <p>Recover the review environment with:
     <code>luthiai recover-review {request.repository} {request.number}</code>
   </p>
 {:else if round?.cleanup_status === 'unknown'}
