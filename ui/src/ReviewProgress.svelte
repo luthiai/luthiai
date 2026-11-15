@@ -1,12 +1,12 @@
 <script>
   import TimeAgo from './TimeAgo.svelte';
   import ReviewFailure from './ReviewFailure.svelte';
-  import { currentReviewRound, reviewProgressSteps } from './request-status.js';
+  import { currentReviewRound, reviewProgressSteps, reviewStartupFailed } from './request-status.js';
   let { request } = $props();
   const run = $derived(request.run);
   const active = $derived(run?.status === 'starting' || run?.status === 'running');
   const round = $derived(currentReviewRound(request));
-  const receipt = $derived((round ?? (run?.status === 'failed' && !run.round_id ? request.latest_round : null))?.receipt);
+  const receipt = $derived((round ?? (reviewStartupFailed(request) ? request.latest_round : null))?.receipt);
   const publication = $derived(request.publication?.round_id === round?.id ? request.publication : null);
   const reviewActive = $derived(active ||
     (['starting', 'running'].includes(round?.status) && round?.cleanup_status === 'in_progress'));
