@@ -4,7 +4,11 @@ use crate::{
     gui_diagnostics,
     review_commands::{InspectedRun, RunError},
 };
-use luthiai::{PrKey, review::RoundId};
+use luthiai::{
+    PrKey,
+    config::AgentKind,
+    review::{ReviewPhase, RoundId},
+};
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -22,13 +26,15 @@ pub type Run = fn(
     &PrKey,
     &InspectedRun,
     Arc<AtomicBool>,
-    &mut dyn FnMut(&RoundId),
+    &mut dyn FnMut(&RoundId, ReviewPhase, AgentKind),
 ) -> Result<(), RunError>;
 
 #[derive(Clone, Serialize)]
 pub struct RunSummary {
     status: RunStatus,
     round_id: Option<RoundId>,
+    phase: Option<ReviewPhase>,
+    reviewer: Option<AgentKind>,
     failure: Option<RunFailure>,
 }
 
@@ -128,6 +134,8 @@ impl Runs {
                 RunSummary {
                     status: RunStatus::Starting,
                     round_id: None,
+                    phase: None,
+                    reviewer: None,
                     failure: None,
                 },
             );
@@ -141,11 +149,13 @@ impl Runs {
                 &worker_key,
                 &inspected,
                 worker.cancelled.clone(),
-                &mut |id| {
+                &mut |id, phase, reviewer| {
                     if let Ok(mut jobs) = worker.jobs.lock() {
                         if let Some(job) = jobs.get_mut(&worker_key) {
                             job.status = RunStatus::Running;
                             job.round_id = Some(id.clone());
+                            job.phase = Some(phase);
+                            job.reviewer = Some(reviewer);
                         }
                     }
                 },

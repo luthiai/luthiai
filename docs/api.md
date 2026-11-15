@@ -23,8 +23,14 @@ New rounds also include `task` with `base_sha` and `scope`:
 `mode: full`, or `mode: incremental` with the previously reviewed `since` commit and confirmed `review_id`.
 
 The optional `run` reports the latest GUI job for this server launch:
-`status` (`starting`, `running`, `finished`, or `failed`), `round_id`, and `failure`.
-`running` means a round has been recorded; its persisted round status shows execution progress.
+`status` (`starting`, `running`, `finished`, or `failed`), `round_id`, `phase`, `reviewer`, and `failure`.
+`running` means a round has been recorded.
+`phase` reports `preparing_checkout`, `rechecking_inputs`, `running_reviewer`,
+`validating_draft`, or `draft_ready`; `reviewer` names its adapter (`claude` or `codex`).
+Both are null until the runner records its round.
+The last phase is retained if the job fails, identifying where it stopped.
+Phases are live observations and are not persisted or used to authorize actions;
+the saved round remains the source for draft availability and cleanup after a server restart.
 Job failure categories omit raw adapter errors, prompts, and provider details.
 
 Review and publication job failures also write local diagnostics to the GUI server's terminal (stderr),

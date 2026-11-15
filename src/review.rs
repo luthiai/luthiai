@@ -106,6 +106,17 @@ pub enum RoundStatus {
     Interrupted,
 }
 
+/// Live execution progress for local observers; it grants no workflow authority.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewPhase {
+    PreparingCheckout,
+    RecheckingInputs,
+    RunningReviewer,
+    ValidatingDraft,
+    DraftReady,
+}
+
 impl RoundStatus {
     pub fn blocks_new_round(self) -> bool {
         match self {

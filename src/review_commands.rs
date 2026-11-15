@@ -6,14 +6,14 @@ use luthiai::{
     Authorization, HeadSha, InputRevision, PrKey, RefreshOutcome, State, StateError,
     agent::{self, AgentRunError},
     archive, checkout,
-    config::{PromptHash, ReviewConfig},
+    config::{AgentKind, PromptHash, ReviewConfig},
     github::{self, PullRequestState},
     openshell::{OpenShell, OpenShellError, SandboxMounts},
     preparation::Readiness,
     prompt_builder::{self, ReviewMode, ReviewScope, ReviewTask},
     review::{
-        DraftOutput, FailureKind, Freshness, OUTPUT_MARKER, OUTPUT_SCHEMA, RoundId, RoundRecord,
-        RoundStatus,
+        DraftOutput, FailureKind, Freshness, OUTPUT_MARKER, OUTPUT_SCHEMA, ReviewPhase, RoundId,
+        RoundRecord, RoundStatus,
     },
     round::{self, ModelSelection},
     sandbox_layout,
@@ -233,7 +233,7 @@ pub fn run_review(
             review_mode,
         },
         cancellation.flag(),
-        &mut |_| {},
+        &mut |_, _, _| {},
     )
 }
 
@@ -243,7 +243,7 @@ pub fn run_inspected_review(
     key: &PrKey,
     inspected: &InspectedRun,
     cancelled: Arc<AtomicBool>,
-    started: &mut dyn FnMut(&RoundId),
+    progress: &mut dyn FnMut(&RoundId, ReviewPhase, AgentKind),
 ) -> Result<(), RunError> {
     execute_review(
         state_path,
@@ -256,7 +256,7 @@ pub fn run_inspected_review(
             review_mode: inspected.review_mode(),
         },
         cancelled,
-        started,
+        progress,
     )
     .map_err(|error| match error.downcast::<InspectionError>() {
         Ok(error) => RunError::Inspection(error),
@@ -286,7 +286,7 @@ fn execute_review(
     config_path: &Path,
     inputs: RunInputs<'_>,
     cancelled: Arc<AtomicBool>,
-    started: &mut dyn FnMut(&RoundId),
+    progress: &mut dyn FnMut(&RoundId, ReviewPhase, AgentKind),
 ) -> Result<()> {
     let RunInputs {
         key,
@@ -412,7 +412,8 @@ fn execute_review(
     // The saved Starting round blocks another round; the runner lock protects
     // this sandbox until execution and cleanup finish.
     drop(pr_lock);
-    started(&id);
+    let reviewer = choice.agent().runner().kind();
+    progress(&id, ReviewPhase::PreparingCheckout, reviewer);
     println!("Round {id}: preparing checkout and sandbox.");
     let mut failure = FailureKind::Preflight;
     let mut sandbox_created = false;
@@ -488,6 +489,7 @@ fn execute_review(
             failure = FailureKind::Recovery;
             anyhow::bail!("review interrupted");
         }
+        progress(&id, ReviewPhase::RecheckingInputs, reviewer);
         println!("Round {id}: rechecking PR inputs and authorization.");
         failure = FailureKind::Preflight;
         let live = client.observe_pull_excluding(key, &state_confirmed_ids(state_path, key)?)?;
@@ -558,7 +560,8 @@ fn execute_review(
             current.dispatch_round(&id, now()?)?;
             storage::save(state_path, &current)?;
         }
-        println!("Round {id}: running {}.", choice.agent().runner().kind().as_str());
+        progress(&id, ReviewPhase::RunningReviewer, reviewer);
+        println!("Round {id}: running {}.", reviewer.as_str());
         let prompt_path = sandbox_layout::system_prompt_file();
         let run = agent::run(
             &shell,
@@ -583,6 +586,8 @@ fn execute_review(
             anyhow::bail!("{error}");
         }
         failure = FailureKind::Output;
+        progress(&id, ReviewPhase::ValidatingDraft, reviewer);
+        println!("Round {id}: validating private draft.");
         let final_response = run
             .final_response
             .as_deref()
@@ -592,7 +597,6 @@ fn execute_review(
             final_response,
         )?;
         let stop_result = shell.stop(&record);
-        println!("Round {id}: validating private draft.");
         let stop_error = save_output_after_stop_attempt(
             stop_result,
             &output.join(sandbox_layout::OUTPUT_FILE_NAME),
@@ -675,6 +679,7 @@ fn execute_review(
         storage::save(state_path, &current)?;
     }
     finish_completed_cleanup(&shell, &record, state_path, stop_error)?;
+    progress(&id, ReviewPhase::DraftReady, reviewer);
     println!(
         "Round {id}: private draft available ({freshness}). Run {}.",
         show_draft_command(key, &id)
@@ -1064,7 +1069,7 @@ mod tests {
                 &key,
                 &decision,
                 Arc::new(AtomicBool::new(false)),
-                &mut |_| panic!("stale run started a round"),
+                &mut |_, _, _| panic!("stale run started a round"),
             )
             .unwrap_err();
             let RunError::Inspection(error) = error else {

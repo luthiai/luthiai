@@ -52,11 +52,15 @@ interface ReviewRound {
   agent: string;
   freshness?: string;
   failure?: string | null;
+  created_at?: number;
+  dispatched_at?: number;
+  finished_at?: number;
   receipt?: {
     review_id: number;
     url: string;
     publisher_login: string;
     commit_id: string;
+    published_at?: number;
   } | null;
 }
 
@@ -85,7 +89,7 @@ interface RequestSnapshot {
   validated_model: ValidatedModel | null;
   latest_round: ReviewRound | null;
   context?: RequestContext;
-  run?: { status: string; round_id?: string | null; failure?: string | null };
+  run?: { status: string; round_id?: string | null; phase?: string | null; reviewer?: string | null; failure?: string | null };
   publication?: {
     round_id?: string;
     status: string;
@@ -1832,55 +1836,147 @@ describe('review requests page', () => {
     } else {
       const primary = await clickMaterialButton(user, container, 'Show progress');
       expect(primary.ariaExpanded).toBe('true');
-      expect(primary.getAttribute('aria-controls')).toBe(container.querySelector('.progress-panel').id);
+      expect(primary.getAttribute('aria-controls')).toBe(screen.getByRole('region', { name: 'Review progress for owner/repo #15' }).id);
     }
     const progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
+    expect(progress.classList.contains('panel')).toBe(true);
+    expect(progress.querySelector('.panel-heading').contains(within(progress).getByText('Close progress'))).toBe(true);
     expect(screen.queryByRole('heading', { name: 'Recorded inputs' })).toBeNull();
     expect(within(progress).queryByRole('heading', { name: 'Author discussion' })).toBeNull();
     expect(within(progress).queryByText('Read draft')).toBeNull();
     expect(container.querySelector('.request-details').hasAttribute('hidden')).toBe(true);
     await clickMaterialButton(user, container, 'Details');
     expect(screen.getByRole('heading', { name: 'Recorded inputs' })).toBeTruthy();
-    expect(container.querySelector('.request-details .progress-panel')).toBeNull();
+    expect(progress.closest('.request-details')).toBeNull();
     await clickMaterialButton(user, container, 'Close progress');
     expect(screen.queryByRole('region', { name: 'Review progress for owner/repo #15' })).toBeNull();
     expect(screen.getByRole('heading', { name: 'Recorded inputs' })).toBeTruthy();
   });
 
-  it('shows short live progress and exposes diagnostics through the primary action', async () => {
+  it('follows runner phases without repeated phase messages and keeps recovery guidance', async () => {
     const user = userEvent.setup();
     const { container, unmount } = render(App);
     const source = FakeEventSource.instances[0];
     await showSnapshot(source, [request({ run: { status: 'starting' } })]);
-    expect(screen.getByRole('heading', { name: 'Starting…' })).toBeTruthy();
-    expect(container.querySelector('.request-details').hasAttribute('hidden')).toBe(true);
     await clickMaterialButton(user, container, 'Show progress');
     const progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
-    expect(container.querySelector('.request-details').hasAttribute('hidden')).toBe(true);
-    expect(screen.getByText(/Checking inputs and preparing the review environment/)).toBeTruthy();
-    await showSnapshot(source, [request({ latest_round: round(), run: { status: 'running', round_id: 'r-example' } })]);
-    expect(screen.getByRole('heading', { name: 'Reviewing…' })).toBeTruthy();
-    expect(screen.getByText('Reviewer running in the sandbox.')).toBeTruthy();
-    await showSnapshot(source, [request({ latest_round: round({ status: 'awaiting_decision', freshness: 'stale' }),
-      run: { status: 'running', round_id: 'r-example' } })]);
-    expect(screen.getByRole('heading', { name: 'Draft outdated' })).toBeTruthy();
+    const steps = within(progress).getByRole('list', { name: 'Review steps' });
+    const step = (label: string) => within(steps).getByText(label).closest('li');
+    expect(within(steps).getAllByRole('listitem')).toHaveLength(4);
+    expect(within(steps).queryByText('Private draft ready')).toBeNull();
+    expect(step('Prepare checkout and sandbox').getAttribute('aria-current')).toBe('step');
+    expect(step('Prepare checkout and sandbox').querySelector('[aria-hidden]').textContent).toBe('▶');
+    expect(step('Recheck PR inputs and review permission').textContent).toContain('Upcoming:');
+    expect(within(progress).queryByText(/Checking inputs and preparing/)).toBeNull();
+    const starting = round({ status: 'starting', created_at: 1 });
+    const run = { status: 'running', round_id: 'r-example', reviewer: 'claude' };
+    await showSnapshot(source, [request({ latest_round: starting, run: { ...run, phase: 'rechecking_inputs' } })]);
+    expect(step('Prepare checkout and sandbox').querySelector('[aria-hidden]').textContent).toBe('✓');
+    expect(step('Recheck PR inputs and review permission').getAttribute('aria-current')).toBe('step');
+    expect(step('Run Claude').textContent).toContain('Upcoming:');
+    expect(within(progress).queryByText(/Review setup began/)).toBeNull();
+    await showSnapshot(source, [request({ latest_round: round({ dispatched_at: 10 }), run: { ...run, phase: 'running_reviewer' } })]);
+    expect(step('Recheck PR inputs and review permission').querySelector('[aria-hidden]').textContent).toBe('✓');
+    expect(step('Run Claude').getAttribute('aria-current')).toBe('step');
+    expect(steps.querySelectorAll('[aria-current="step"]')).toHaveLength(1);
+    expect(within(progress).queryByText('Reviewer running in the sandbox.')).toBeNull();
+    await showSnapshot(source, [request({ latest_round: round({ dispatched_at: 10 }), run: { ...run, phase: 'validating_draft' } })]);
+    expect(step('Run Claude').querySelector('[aria-hidden]').textContent).toBe('✓');
+    expect(step('Validate and save private draft').getAttribute('aria-current')).toBe('step');
+    const saved = round({ status: 'awaiting_decision', dispatched_at: 10, freshness: 'stale' });
+    await showSnapshot(source, [request({ latest_round: saved, run: { ...run, phase: 'validating_draft' } })]);
+    expect(step('Validate and save private draft').querySelector('[aria-hidden]').textContent).toBe('✓');
+    expect(steps.querySelectorAll('[data-state="done"]')).toHaveLength(4);
+    expect(steps.querySelectorAll('[aria-current="step"]')).toHaveLength(0);
     expect(within(progress).getByText('Finishing cleanup…')).toBeTruthy();
-    expect(screen.getByText(/Draft freshness is stale/)).toBeTruthy();
-    await showSnapshot(source, [request({ latest_round: round({ status: 'awaiting_decision', cleanup_status: 'needs_attention' }),
-      run: { status: 'failed', round_id: 'r-example', failure: 'execution' } })]);
+    expect(within(progress).queryByText('Private draft saved.')).toBeNull();
+    expect(within(progress).getByText(/The PR changed or closed/)).toBeTruthy();
+    await showSnapshot(source, [request({ latest_round: { ...saved, cleanup_status: 'needs_attention' },
+      run: { ...run, status: 'failed', phase: 'validating_draft', failure: 'execution' } })]);
+    expect(steps.querySelectorAll('[data-state="done"]')).toHaveLength(4);
+    expect(steps.querySelectorAll('[aria-current="step"]')).toHaveLength(0);
     expect(screen.getByRole('alert').textContent).toContain('The private draft was saved');
-    expect(screen.getByText(/luthiai recover-review owner\/repo 15/)).toBeTruthy();
-    await clickMaterialButton(user, container, 'Close progress');
+    expect(within(progress).getByText(/luthiai recover-review owner\/repo 15/)).toBeTruthy();
+    await showSnapshot(source, [request({ latest_round: { ...saved, freshness: 'fresh', cleanup_pending: false, cleanup_status: 'complete' },
+      run: { ...run, status: 'finished', phase: 'draft_ready' } })]);
+    expect(steps.querySelectorAll('[data-state="done"]')).toHaveLength(4);
+    expect(within(steps).queryByText('Private draft ready')).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Draft ready' })).toBeTruthy();
+    expect(within(steps).queryByText('Publish or reject draft')).toBeNull();
+    await clickMaterialButton(user, progress, 'Close progress');
     await showSnapshot(source, [request({ run: { status: 'failed', round_id: null, failure: 'stale_preparation' } })]);
-    expect(screen.getByRole('heading', { name: 'Review failed' })).toBeTruthy();
     await clickMaterialButton(user, container, 'View issue');
     expect(screen.getByRole('alert').textContent).toContain('Prepare and inspect the review again');
-    await showSnapshot(source, [request({ latest_round: round({ status: 'failed', failure: 'timeout', cleanup_pending: false, cleanup_status: 'complete' }),
-      run: { status: 'failed', round_id: 'r-example', failure: 'execution' } })]);
+    await showSnapshot(source, [request({ latest_round: round({ status: 'failed', failure: 'timeout', dispatched_at: 10,
+      cleanup_pending: false, cleanup_status: 'complete' }),
+      run: { ...run, status: 'failed', phase: 'running_reviewer', failure: 'execution' } })]);
     expect(screen.getByRole('alert').textContent).toContain('The GUI review job failed');
     expect(screen.getByText(/Agent timed out/)).toBeTruthy();
     unmount();
     expect(source.close).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ['starting', 'Prepare checkout and sandbox'],
+    ['running', 'Run reviewer'],
+  ])('shows progress for a saved %s round without an in-memory job', async (status, message) => {
+    const user = userEvent.setup();
+    const { container } = render(App);
+    await showSnapshot(FakeEventSource.instances[0], [request({ latest_round: round({ status }) })]);
+    await clickMaterialButton(user, container, 'Show progress');
+    const progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
+    expect(progress.querySelector('[aria-current="step"]').textContent).toContain(message);
+    expect(within(progress).getByRole('note').textContent).toContain('Stopping the luthiai gui command stops the running review.');
+  });
+
+  it.each(['published', 'rejected'])('keeps a new job separate from the previous %s draft and lets progress close and reopen without changing the job', async (status) => {
+    const user = userEvent.setup();
+    sessionStorage.setItem('luthiai-session', 'saved-token');
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => draft({ round_id: 'r-new' }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(App);
+    const source = FakeEventSource.instances[0];
+    const previousRound = round({ status, cleanup_pending: false, cleanup_status: 'complete',
+      dispatched_at: 100, finished_at: 200, receipt: status === 'published' ? {
+        review_id: 71, url: 'https://github.com/owner/repo/pull/15#pullrequestreview-71',
+        publisher_login: 'publisher', commit_id: 'a'.repeat(40), published_at: 300,
+      } : null });
+    await showSnapshot(source, [request({ latest_round: previousRound })]);
+    await screen.findByText('Read saved draft');
+    await showSnapshot(source, [request({ latest_round: previousRound, run: { status: 'starting', round_id: null } })]);
+    await clickMaterialButton(user, container, 'Show progress');
+    let progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
+    expect(progress.querySelector('[aria-current="step"]').textContent).toContain('Prepare checkout and sandbox');
+    expect(within(progress).queryByRole('link', { name: 'GitHub review 71' })).toBeNull();
+    expect(within(progress).queryByText(/Review started/)).toBeNull();
+    expect(screen.queryByText('Read draft')).toBeNull();
+    expect(screen.queryByText('Read saved draft')).toBeNull();
+    await clickMaterialButton(user, container, 'Show progress');
+    expect(screen.getByRole('region', { name: 'Review progress for owner/repo #15' })).toBe(progress);
+    await showSnapshot(source, [request({ latest_round: previousRound, run: { status: 'running', round_id: 'r-new' } })]);
+    expect(screen.queryByText('Read draft')).toBeNull();
+    expect(screen.queryByText('Read saved draft')).toBeNull();
+    await clickMaterialButton(user, progress, 'Close progress');
+    expect(screen.queryByRole('region', { name: 'Review progress for owner/repo #15' })).toBeNull();
+    expect(screen.getByRole('heading', { name: 'Reviewing…' })).toBeTruthy();
+    expect(source.close).not.toHaveBeenCalled();
+    await showSnapshot(source, [request({ latest_round: round({ id: 'r-new', dispatched_at: 400 }),
+      run: { status: 'running', round_id: 'r-new' } })]);
+    await clickMaterialButton(user, container, 'Show progress');
+    progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
+    expect(progress.querySelector('[aria-current="step"]').textContent).toContain('Run reviewer');
+    expect(within(progress).queryByText(/Review started/)).toBeNull();
+    expect(screen.queryByText('Read draft')).toBeNull();
+    expect(screen.queryByText('Read saved draft')).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await showSnapshot(source, [request({ latest_round: round({ id: 'r-new', status: 'awaiting_decision' }),
+      run: { status: 'running', round_id: 'r-new' } })]);
+    await clickMaterialButton(user, progress, 'Read draft');
+    await screen.findByRole('region', { name: 'Private draft for owner/repo #15' });
+    expect(screen.getByText(draft().lead_advice)).toBeTruthy();
+    expect(fetchMock.mock.calls[1][0]).toBe('/api/drafts/r-new?repository=owner%2Frepo&number=15');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -1910,6 +2006,7 @@ describe('review requests page', () => {
     await clickMaterialButton(user, container, 'View issue');
     const progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
     expect(within(progress).getByRole('alert').textContent).toContain(error);
+    expect(within(progress).getByText('Read draft').closest('.panel-actions')).toBeTruthy();
     expect(container.querySelector('.request-details').hasAttribute('hidden')).toBe(true);
     await clickMaterialButton(user, progress, 'Read draft');
     await screen.findByText(draft().lead_advice);
@@ -2108,9 +2205,9 @@ describe('review requests page', () => {
     } }, publication: { round_id: 'r-example', status: 'published', freshness: 'stale' } })]);
     const link = screen.getByRole('link', { name: 'GitHub review 71' });
     expect(link.getAttribute('href')).toBe('https://github.com/owner/repo/pull/15#pullrequestreview-71');
-    const receiptNotes = [...container.querySelectorAll('.action-note')].filter((note) => note.textContent.includes('@publisher'));
-    expect(receiptNotes).toHaveLength(1);
-    expect(receiptNotes[0].textContent).toContain('tied to commit');
+    const progress = screen.getByRole('region', { name: 'Review progress for owner/repo #15' });
+    expect(within(progress).getByText('@publisher').closest('p').textContent).toContain('tied to commit');
+    expect(within(progress).getByRole('link', { name: 'aaaaaaa' }).getAttribute('href')).toBe(`https://github.com/owner/repo/commit/${'a'.repeat(40)}`);
     expect(screen.getByText(/PR inputs changed after publication/)).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });

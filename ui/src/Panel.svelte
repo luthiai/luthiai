@@ -1,8 +1,8 @@
 <script>
-  let { title, label, closeLabel, onClose, closeDisabled = false, children, actions } = $props();
+  let { id, title, label, closeLabel, onClose, closeDisabled = false, children, actions } = $props();
 </script>
 
-<section class="panel" aria-label={label}>
+<section {id} class="panel" aria-label={label}>
   <header class="panel-heading">
     <h3>{title}</h3>
     <!-- Material Web supplies keyboard activation inside its shadow DOM. -->
