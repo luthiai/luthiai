@@ -73,6 +73,10 @@ Your assistant uses the [LuthiAI configuration guide](skills/luthiai/references/
 
 The gateway operator supplies an already-running OpenShell gateway and compatible VM images;
 this may be the lead developer or another administrator.
+Reviewer archives and their OCI metadata are published in
+[luthiai/review-images releases](https://github.com/luthiai/review-images/releases).
+Follow the [VM image setup guide](skills/luthiai/references/configuration.md#vm-images-and-policies)
+to select a release and configure its verified downloads.
 Configuration stays in private local files shared by the GUI and CLI.
 
 ### Refine review prompts

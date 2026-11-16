@@ -314,6 +314,43 @@ reviewer tool instructions and full or incremental scope selection now belong to
 
 ## VM images and policies
 
+Select a fixed version from
+[luthiai/review-images releases](https://github.com/luthiai/review-images/releases).
+Choose `amd64` or `arm64` for the OpenShell VM host and `claude` or `codex` for the reviewer.
+Download the matching `review-AGENT-linux-ARCH.tar` and
+`review-AGENT-linux-ARCH.tar.config.json` pair from that same release,
+along with `SHA256SUMS` and `release-manifest.json`.
+The manifest records the source commit, upstream CLI versions, base digest, and OCI image digests.
+Keep the rootfs tar uncompressed and the metadata beside it.
+
+For example, after replacing the version with an existing release:
+
+```sh
+release=images-2026.11.16.2
+agent=claude
+arch=arm64
+
+mkdir -p "images/$release"
+cd "images/$release"
+
+gh release download "$release" --repo luthiai/review-images \
+  --pattern "review-$agent-linux-$arch.tar*" \
+  --pattern SHA256SUMS --pattern release-manifest.json
+
+grep -E "  review-$agent-linux-$arch\.tar(\.config\.json)?$" SHA256SUMS > selected.SHA256SUMS
+test "$(wc -l < selected.SHA256SUMS | tr -d ' ')" = 2
+sha256sum --check selected.SHA256SUMS
+```
+
+On macOS, use `shasum -a 256 --check selected.SHA256SUMS` for the last command.
+If all assets were downloaded, verify the full list with `sha256sum --check SHA256SUMS`.
+After verification, set the selected reviewer's `vm_archive.path` to the tar path,
+`vm_archive.sha256` to the tar checksum, and `vm_archive.config_sha256` to the metadata checksum.
+Relative paths start at the configuration file's directory.
+The metadata filename must remain the complete tar filename plus `.config.json`.
+Use a new local release directory when upgrading, verify its files, and update all three values together.
+Release assets stay fixed; LuthiAI does not follow GHCR's moving `latest` tag.
+
 Archive paths must end in `.tar` and name regular files rather than symlinks.
 Each archive needs a regular, separate OCI metadata file at `<archive>.config.json`.
 Both SHA-256 checksums must match their files.
