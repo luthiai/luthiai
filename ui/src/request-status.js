@@ -55,6 +55,8 @@ export function reviewLifecycleSteps(situation, request = {}) {
   const context = request.context?.head_sha === request.head_sha && request.context?.revision === request.revision
     ? request.context : null;
   const choice = round ?? (situation.action === 'run' ? request.validated_model : null);
+  // Show the lead's current saved scope, which can change after this round was authorized.
+  // The round fallback covers permission that has already been consumed or revoked.
   const permission = { one_round: 'One review', pr_cycle: 'All reviews for this PR' }[request.authorization]
     ?? (round ? 'For this round' : null);
   const receipt = round?.receipt;
