@@ -124,6 +124,16 @@
     box-shadow: 0 0 0 5px #fff8eb;
   }
 
+  li[data-state='unavailable'] {
+    color: #76737e;
+  }
+
+  li[data-state='unavailable'] .stage-marker {
+    border-style: dashed;
+    border-color: #9c9aa6;
+    background: #f4f3f7;
+  }
+
   @media (max-width: 600px) {
     .review-lifecycle {
       grid-template-columns: minmax(0, 1fr);
