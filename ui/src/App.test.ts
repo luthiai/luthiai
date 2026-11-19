@@ -763,6 +763,52 @@ describe('review requests page', () => {
     expect(row.querySelector('.request-details')).toBeTruthy();
   });
 
+  it.each(['failed', 'rejected'])('does not invent a draft decision for a closed PR with a %s round awaiting cleanup', async (status) => {
+    const user = userEvent.setup();
+    sessionStorage.setItem('luthiai-session', 'saved-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true }));
+    const { container } = render(App);
+    const source = FakeEventSource.instances[0];
+    const snapshot = request({ context: context({ state: 'closed' }), latest_round: round({ status }) });
+    await showSnapshot(source, [snapshot]);
+    const lifecycle = screen.getByRole('list', { name: 'Review lifecycle' });
+    expect(lifecycle.querySelector('[aria-current="step"]')).toBeNull();
+    expect(lifecycle.querySelector('[data-state="done"]')).toBeNull();
+    expect(within(lifecycle).getAllByRole('listitem')).toHaveLength(5);
+    expect(within(lifecycle).getAllByText('Unavailable:')).toHaveLength(5);
+    expect(screen.getByRole('heading', { name: 'Pull request closed' })).toBeTruthy();
+    expect(container.querySelector('.next-step').getAttribute('data-tone')).toBe('warning');
+    expect(screen.getByRole('link', { name: 'Open pull request' }).getAttribute('href'))
+      .toBe('https://github.com/owner/repo/pull/15');
+    await clickMaterialButton(user, container, 'Details');
+    await clickMaterialButton(user, container, 'Review activity');
+    expect(screen.getByRole('region', { name: 'Review progress for owner/repo #15' })).toBeTruthy();
+
+    await showSnapshot(source, [{ ...snapshot, latest_round: { ...snapshot.latest_round, cleanup_pending: false, cleanup_status: 'complete' } }]);
+    expect(screen.queryByRole('list', { name: 'Review lifecycle' })).toBeNull();
+    expect(container.querySelector('.request-item').classList.contains('compact-closed')).toBe(true);
+  });
+
+  it('shows an inactive lifecycle when preparation discovers closure before a context update', async () => {
+    const user = userEvent.setup();
+    sessionStorage.setItem('luthiai-session', 'saved-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => preparation({ readiness: 'pull_closed' }) }));
+    const { container } = render(App);
+    await showSnapshot(FakeEventSource.instances[0], [preparedRequest({ context: context({ revision: 2 }) })]);
+    await screen.findAllByText('Review options');
+    await clickMaterialButton(user, container.querySelector('.next-step'), 'Review options');
+    await screen.findByRole('heading', { name: 'Pull request closed' });
+    const lifecycle = screen.getByRole('list', { name: 'Review lifecycle' });
+    expect(lifecycle.querySelector('[aria-current="step"]')).toBeNull();
+    expect(lifecycle.querySelector('[data-state="done"]')).toBeNull();
+    expect(within(lifecycle).getAllByText('Unavailable:')).toHaveLength(5);
+    expect(container.querySelector('.next-step').getAttribute('data-tone')).toBe('warning');
+    expect(screen.queryByText('Start review')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Open pull request' }).getAttribute('href'))
+      .toBe('https://github.com/owner/repo/pull/15');
+  });
+
   it('refreshes a compact closed PR and restores full controls when an open snapshot arrives', async () => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');

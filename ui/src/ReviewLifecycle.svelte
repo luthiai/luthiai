@@ -3,7 +3,7 @@
 
   let { situation } = $props();
   const steps = $derived(reviewLifecycleSteps(situation));
-  const stateLabels = { done: 'Completed: ', pending: 'Upcoming: ', attention: 'Needs attention: ' };
+  const stateLabels = { done: 'Completed: ', pending: 'Upcoming: ', attention: 'Needs attention: ', unavailable: 'Unavailable: ' };
 </script>
 
 <ol class="review-lifecycle" aria-label="Review lifecycle">

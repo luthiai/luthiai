@@ -46,6 +46,33 @@ describe('review lifecycle', () => {
     expect(reviewLifecycleSteps(reviewSituation(snapshot, preparation, false, 'beta')).map((stage) => stage.state))
       .toEqual(['done', 'done', 'done', 'current', 'pending']);
   });
+
+  it('treats closure reported by context or preparation as the same terminal state', () => {
+    const fromContext = reviewSituation({ ...request, context: { state: 'closed' } });
+    const fromPreparation = reviewSituation(request, { ...preparation, readiness: 'pull_closed' });
+    expect(fromContext).toEqual(fromPreparation);
+    expect(fromContext).toMatchObject({ stage: 'closed', tone: 'warning', action: 'github' });
+    expect(reviewLifecycleSteps(fromContext).map((stage) => stage.state))
+      .toEqual(['unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable']);
+  });
+
+  it.each(['failed', 'rejected'])('does not claim progress for a closed PR while a %s round is cleaning up', (status) => {
+    const snapshot = { ...request, context: { state: 'closed' }, latest_round: {
+      status, cleanup_pending: true, cleanup_status: 'in_progress',
+    } };
+    expect(reviewLifecycleSteps(reviewSituation(snapshot)).map((stage) => stage.state))
+      .toEqual(['unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable']);
+  });
+
+  it.each([
+    { status: 'awaiting_decision', cleanup_status: 'complete', stage: 'decision', action: 'draft' },
+    { status: 'failed', cleanup_status: 'needs_attention', stage: 'review', action: 'progress' },
+    { status: 'publication_unknown', cleanup_status: 'complete', stage: 'decision', action: 'progress' },
+  ])('preserves $status draft or recovery work after closure', ({ status, cleanup_status, stage, action }) => {
+    const situation = reviewSituation({ ...request, context: { state: 'closed' }, latest_round: { status, cleanup_status } });
+    expect(situation).toMatchObject({ stage, action });
+    expect(reviewLifecycleSteps(situation).some((step) => ['current', 'attention'].includes(step.state))).toBe(true);
+  });
 });
 
 describe('review progress steps', () => {
