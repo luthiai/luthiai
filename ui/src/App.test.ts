@@ -707,7 +707,7 @@ describe('review requests page', () => {
     const source = FakeEventSource.instances[0];
     await showSnapshot(source, [request()]);
     const identity = container.querySelector<HTMLElement>('.request-identity');
-    const observation = container.querySelector('.github-observation');
+    const observation = container.querySelector<HTMLElement>('.github-observation');
     expect(observation.textContent.trim()).toBe('GitHub not checked');
     const fallback = within(identity).getByRole('link', { name: 'owner/repo #15' }) as HTMLAnchorElement;
     expect(fallback.href).toBe('https://github.com/owner/repo/pull/15');
@@ -722,13 +722,13 @@ describe('review requests page', () => {
     expect(within(identity).getAllByRole('link')).toHaveLength(1);
     expect(screen.getByText('owner/repo #15 · @alice · Open')).toBeTruthy();
     expect(identity.querySelector('.pr-meta a')).toBeNull();
-    expect(screen.getByText('2 minutes ago')).toBeTruthy();
+    expect(within(observation).getByText('2 minutes ago')).toBeTruthy();
     expect(observation.textContent.trim()).toBe('GitHub checked 2 minutes ago');
     expect(screen.getByRole('group', { name: 'Local updates' })).toBeTruthy();
     expect(screen.getByText(/the author discussion changed/)).toBeTruthy();
     expect(container.querySelector('img')).toBeNull();
     await showSnapshot(source, [request({ context, latest_round: round() })]);
-    expect(screen.getByText('2 minutes ago')).toBeTruthy();
+    expect(within(observation).getByText('2 minutes ago')).toBeTruthy();
     expect(screen.getByText('Reviewing…')).toBeTruthy();
   });
 
@@ -1242,7 +1242,7 @@ describe('review requests page', () => {
     expect(screen.queryByRole('region', { name: 'Review permissions for owner/repo #15' })).toBeNull();
     expect(screen.getByText('Not granted')).toBeTruthy();
     await showSnapshot(source, [{ ...observed, authorization: scope }]);
-    expect(screen.getByText(badge)).toBeTruthy();
+    expect(within(container.querySelector('.request-details')).getByText(badge)).toBeTruthy();
   });
 
   it.each([

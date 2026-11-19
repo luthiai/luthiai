@@ -56,6 +56,24 @@ describe('review lifecycle', () => {
       .toEqual(['unavailable', 'unavailable', 'unavailable', 'unavailable', 'unavailable']);
   });
 
+  it('uses the current confirmed model and permission before starting a new round', () => {
+    const snapshot = { ...request, latest_round: { id: 'r-old', status: 'published', revision: 1,
+      head_sha: request.head_sha, model: 'OldModel', agent: 'old-runner' } };
+    const steps = reviewLifecycleSteps(reviewSituation(snapshot, preparation), snapshot);
+    expect(steps[1]).toMatchObject({ label: 'Review allowed', detail: 'One review' });
+    expect(steps[2]).toMatchObject({ label: 'Review prepared', detail: 'alpha · runner' });
+    expect(steps[3]).toMatchObject({ label: 'Run review', detail: null, timestamp: null });
+  });
+
+  it.each([
+    { head_sha: 'b'.repeat(40), revision: 2 },
+    { head_sha: request.head_sha, revision: 1 },
+  ])('discards refresh details for a different head or revision: %o', (binding) => {
+    const snapshot = { ...request, context: { ...binding, checked_at: 123 } };
+    expect(reviewLifecycleSteps(reviewSituation(snapshot), snapshot)[0])
+      .toMatchObject({ label: 'PR refreshed', timestamp: null });
+  });
+
   it.each(['failed', 'rejected'])('does not claim progress for a closed PR while a %s round is cleaning up', (status) => {
     const snapshot = { ...request, context: { state: 'closed' }, latest_round: {
       status, cleanup_pending: true, cleanup_status: 'in_progress',

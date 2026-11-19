@@ -275,7 +275,7 @@
   {/if}
   {#if !compactClosed}
     <section class="next-step" data-tone={situation.tone} aria-label={`Next step for ${request.repository} #${request.number}`}>
-      <ReviewLifecycle {situation} />
+      <ReviewLifecycle {situation} {request} />
       <h3 class="workflow-status" aria-live="polite">{situation.title}</h3>
       <div class="next-step-actions">
       {#if situation.secondaryAction === 'checks'}

@@ -49,22 +49,38 @@ export function reviewProgressSteps(request) {
   }));
 }
 
-export function reviewLifecycleSteps(situation) {
+export function reviewLifecycleSteps(situation, request = {}) {
+  const round = ['decision', 'complete'].includes(situation.stage) || situation.action === 'progress'
+    ? currentReviewRound(request) : null;
+  const context = request.context?.head_sha === request.head_sha && request.context?.revision === request.revision
+    ? request.context : null;
+  const choice = round ?? (situation.action === 'run' ? request.validated_model : null);
+  const permission = round ? 'For this round'
+    : { one_round: 'One review', pr_cycle: 'All reviews for this PR' }[request.authorization];
+  const receipt = round?.receipt;
   const stages = [
-    { id: 'refresh', label: 'Refresh PR' },
-    { id: 'permission', label: 'Allow review' },
-    { id: 'preparation', label: 'Prepare review' },
-    { id: 'review', label: 'Run review' },
-    { id: 'decision', label: 'Decide on draft' },
+    { id: 'refresh', label: 'Refresh PR', doneLabel: 'PR refreshed', timestamp: context?.checked_at },
+    { id: 'permission', label: 'Allow review', doneLabel: 'Review allowed', detail: permission },
+    { id: 'preparation', label: 'Prepare review', doneLabel: 'Review prepared',
+      detail: choice?.model ? `${choice.model}${choice.agent ? ` · ${choice.agent}` : ''}` : null },
+    { id: 'review', label: 'Run review', doneLabel: 'Review completed', detail: 'Private draft saved', timestamp: round?.finished_at },
+    { id: 'decision', label: 'Decide on draft', doneLabel: 'Draft published',
+      detail: receipt ? `By @${receipt.publisher_login}` : null, timestamp: receipt?.published_at },
   ];
   const current = situation.stage === 'complete' ? stages.length
     : stages.findIndex((stage) => stage.id === situation.stage);
-  return stages.map((stage, index) => ({
-    ...stage,
-    state: situation.stage === 'closed' ? 'unavailable'
+  return stages.map((stage, index) => {
+    const state = situation.stage === 'closed' ? 'unavailable'
       : index < current ? 'done' : index !== current ? 'pending'
-      : situation.tone === 'warning' ? 'attention' : 'current',
-  }));
+      : situation.tone === 'warning' ? 'attention' : 'current';
+    return {
+      id: stage.id,
+      label: state === 'done' ? stage.doneLabel : stage.label,
+      state,
+      detail: state === 'done' ? stage.detail ?? null : null,
+      timestamp: state === 'done' ? stage.timestamp ?? null : null,
+    };
+  });
 }
 
 export function reviewBlocker(request) {
