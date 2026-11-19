@@ -149,7 +149,7 @@ Each PR shows one primary workflow action, with technical state behind Details.
 A lifecycle overview follows the same display decision as that action,
 showing completed, current, and upcoming stages from refreshing inputs through the draft decision.
 Completed stages use past-tense labels with recorded refresh, completion, and publication times,
-plus permission and model details bound to the displayed review.
+plus the current permission scope and model details from the displayed review.
 It resets with the next review's requirements rather than treating an earlier round as current progress.
 Progress and recovery instructions open in a separate activity panel without expanding the PR metadata.
 Its step list follows typed runner phases for checkout and sandbox preparation,

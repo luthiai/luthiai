@@ -55,8 +55,8 @@ export function reviewLifecycleSteps(situation, request = {}) {
   const context = request.context?.head_sha === request.head_sha && request.context?.revision === request.revision
     ? request.context : null;
   const choice = round ?? (situation.action === 'run' ? request.validated_model : null);
-  const permission = round ? 'For this round'
-    : { one_round: 'One review', pr_cycle: 'All reviews for this PR' }[request.authorization];
+  const permission = { one_round: 'One review', pr_cycle: 'All reviews for this PR' }[request.authorization]
+    ?? (round ? 'For this round' : null);
   const receipt = round?.receipt;
   const stages = [
     { id: 'refresh', label: 'Refresh PR', doneLabel: 'PR refreshed', timestamp: context?.checked_at },

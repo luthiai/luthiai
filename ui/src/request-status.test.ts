@@ -65,6 +65,14 @@ describe('review lifecycle', () => {
     expect(steps[3]).toMatchObject({ label: 'Run review', detail: null, timestamp: null });
   });
 
+  it.each(['running', 'awaiting_decision', 'published'])('preserves PR-cycle permission details while the round is %s', (status) => {
+    const snapshot = { ...request, authorization: 'pr_cycle', latest_round: {
+      id: 'r-current', status, head_sha: request.head_sha, revision: request.revision,
+    } };
+    expect(reviewLifecycleSteps(reviewSituation(snapshot), snapshot)[1])
+      .toMatchObject({ label: 'Review allowed', state: 'done', detail: 'All reviews for this PR' });
+  });
+
   it.each([
     { head_sha: 'b'.repeat(40), revision: 2 },
     { head_sha: request.head_sha, revision: 1 },

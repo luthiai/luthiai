@@ -64,6 +64,24 @@ it('uses the publication receipt and clears old completed details when a new job
   expect(container.textContent).not.toContain('publisher');
 });
 
+it('keeps PR-cycle permission details consistent across review progress and refreshed inputs', async () => {
+  const active = { ...snapshot, authorization: 'pr_cycle',
+    latest_round: { ...snapshot.latest_round, status: 'running' } };
+  const { rerender } = render(ReviewLifecycle, { request: active, situation: reviewSituation(active) });
+  const permission = () => screen.getByText('Review allowed').closest('li').querySelector('.stage-detail').textContent.trim();
+  expect(permission()).toBe('All reviews for this PR');
+
+  const saved = { ...snapshot, authorization: 'pr_cycle' };
+  await rerender({ request: saved, situation: reviewSituation(saved) });
+  expect(permission()).toBe('All reviews for this PR');
+
+  const refreshed = { ...saved, revision: 3, context: { ...saved.context, revision: 3, checked_at: now },
+    latest_round: { ...saved.latest_round, status: 'published' } };
+  await rerender({ request: refreshed, situation: reviewSituation(refreshed) });
+  expect(permission()).toBe('All reviews for this PR');
+  expect(screen.getByText('Prepare review').closest('li').getAttribute('aria-current')).toBe('step');
+});
+
 it('omits unavailable timestamps rather than assigning a completion time in the browser', () => {
   const { checked_at, ...context } = snapshot.context;
   const { finished_at, ...latest_round } = snapshot.latest_round;

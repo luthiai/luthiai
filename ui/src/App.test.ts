@@ -2615,7 +2615,7 @@ describe('review requests page', () => {
 
     const inputs = screen.getByRole('heading', { name: 'Recorded inputs' }).parentElement;
     expect(within(inputs).getByText('Input revision').nextElementSibling.textContent).toBe('2');
-    expect(screen.getByText('One review')).toBeTruthy();
+    expect(within(inputs).getByText('One review')).toBeTruthy();
     expect(screen.getAllByText('Running').length).toBeGreaterThan(0);
     expect(screen.getByRole('heading', { name: 'Author discussion' })).toBeTruthy();
     const discussion = screen.getByRole('heading', { name: 'Author discussion' }).parentElement;
