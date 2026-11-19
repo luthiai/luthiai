@@ -323,7 +323,8 @@ along with `SHA256SUMS` and `release-manifest.json`.
 The manifest records the source commit, upstream CLI versions, base digest, and OCI image digests.
 Keep the rootfs tar uncompressed and the metadata beside it.
 
-For example, after replacing the version with an existing release:
+Run this example from the directory containing your effective `config.json`
+(reported by `luthiai config-path`), after selecting an existing release:
 
 ```sh
 release=images-2026.11.16.2
@@ -344,12 +345,16 @@ sha256sum --check selected.SHA256SUMS
 
 On macOS, use `shasum -a 256 --check selected.SHA256SUMS` for the last command.
 If all assets were downloaded, verify the full list with `sha256sum --check SHA256SUMS`.
-After verification, set the selected reviewer's `vm_archive.path` to the tar path,
-`vm_archive.sha256` to the tar checksum, and `vm_archive.config_sha256` to the metadata checksum.
+After verification, find the entry in `repositories[].runners[]`
+whose `agent` matches the selected reviewer.
+Set its `vm_archive.path` to the tar path,
+`vm_archive.sha256` to the tar checksum,
+and `vm_archive.config_sha256` to the metadata checksum.
 Relative paths start at the configuration file's directory.
 The metadata filename must remain the complete tar filename plus `.config.json`.
 Use a new local release directory when upgrading, verify its files, and update all three values together.
-Release assets stay fixed; LuthiAI does not follow GHCR's moving `latest` tag.
+Pin the verified checksums in the configuration.
+LuthiAI does not follow the GitHub Container Registry (GHCR) images' moving `latest` tag.
 
 Archive paths must end in `.tar` and name regular files rather than symlinks.
 Each archive needs a regular, separate OCI metadata file at `<archive>.config.json`.
