@@ -27,9 +27,11 @@ jobs:
         working-directory: ui
       - run: npm test
         working-directory: ui
-      - run: npm run build
+      - name: Rebuild UI assets from source
+        run: npm run build -- --outDir "$RUNNER_TEMP/luthiai-ui-dist" --emptyOutDir
         working-directory: ui
-      - run: git diff --exit-code -- ui/dist
+      - name: Verify committed UI assets match the build
+        run: diff --recursive --no-dereference ui/dist "$RUNNER_TEMP/luthiai-ui-dist"
 
   checks:
     timeout-minutes: 30

@@ -218,3 +218,5 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - Avoid running the same PR checks on both `push` and `pull_request`.
   Group PR runs by workflow and PR, and cancel runs superseded by newer changes.
 - Set a reasonable timeout for CI jobs so stalled checks do not run indefinitely.
+- Verify committed UI assets against a clean build in a separate directory.
+  Compare complete trees, including missing or extra files, without following symlinks.
