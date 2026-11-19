@@ -513,6 +513,9 @@ CI also checks all targets with Rust 1.85 on each of these platforms.
 
 Keep the compiled UI in `ui/dist` under version control
 so building the Rust application does not require a separate frontend build.
+PR CI rebuilds the UI into a clean temporary directory and compares it byte for byte with `ui/dist`,
+including missing or extra files.
+This detects committed assets that do not match the reviewed UI source and locked dependencies.
 To change the UI, use Node 24 and rebuild the assets before compiling Rust:
 
 ```sh
