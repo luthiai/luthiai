@@ -183,8 +183,8 @@ The separate [review-images repository](https://github.com/luthiai/review-images
 owns the reviewer Containerfiles, native builds, and image releases.
 It supplies a flattened, uncompressed rootfs `.tar` and the matching raw OCI configuration
 at `<archive>.config.json` for each reviewer and Linux architecture.
-The metadata carries `config.Env`, including the adapter's absolute executable path;
-container-engine inspection JSON and saved OCI archives are not interchangeable with these files.
+The metadata carries `config.Env`, including the adapter's absolute executable path.
+Container engine inspection JSON and saved OCI archives are not interchangeable with these files.
 The application verifies both files against independently configured SHA-256 values
 and consumes this archive/metadata boundary without depending on the image release process.
 Image versions advance independently of application versions.
