@@ -146,6 +146,9 @@ Neither recovery automatically reruns the reviewer or retries the post.
 
 Decision panels retain the inputs the lead inspected across live updates.
 Each PR shows one primary workflow action, with technical state behind Details.
+A lifecycle overview follows the same display decision as that action,
+showing completed, current, and upcoming stages from refreshing inputs through the draft decision.
+It resets with the next review's requirements rather than treating an earlier round as current progress.
 Progress and recovery instructions open in a separate activity panel without expanding the PR metadata.
 Its step list follows typed runner phases for checkout and sandbox preparation,
 input and permission rechecks, reviewer execution, and draft validation and saving.

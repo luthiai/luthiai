@@ -546,6 +546,45 @@ describe('sign-in link', () => {
 });
 
 describe('review requests page', () => {
+  it('keeps the whole lifecycle visible as live review and publication states change', async () => {
+    const { container } = render(App);
+    const source = FakeEventSource.instances[0];
+    await showSnapshot(source, [request()]);
+    const lifecycle = screen.getByRole('list', { name: 'Review lifecycle' });
+    const stages = () => within(lifecycle).getAllByRole('listitem');
+    expect(stages().map((stage) => stage.querySelector('.stage-label').lastChild.textContent))
+      .toEqual(['Refresh PR', 'Allow review', 'Prepare review', 'Run review', 'Decide on draft']);
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Refresh PR');
+    expect([...lifecycle.querySelectorAll('[aria-hidden]')].every((marker) => marker.textContent === '')).toBe(true);
+    expect(container.querySelector('.request-details').hasAttribute('hidden')).toBe(true);
+
+    await showSnapshot(source, [preparedRequest({ authorization: 'awaiting_lead' })]);
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Allow review');
+    expect(stages()[0].textContent).toContain('Completed:');
+    expect(stages()[0].querySelector('[aria-hidden]').textContent).toBe('✓');
+    expect(stages()[2].textContent).toContain('Upcoming:');
+
+    await showSnapshot(source, [request({ authorization: 'awaiting_lead', latest_round: round() })]);
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Run review');
+    expect(lifecycle.querySelectorAll('[data-state="done"]')).toHaveLength(3);
+    expect(stages()[4].textContent).toContain('Upcoming:');
+
+    await showSnapshot(source, [request({ latest_round: round({ status: 'awaiting_decision' }), run: { status: 'running' } })]);
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Decide on draft');
+    expect(lifecycle.querySelectorAll('[data-state="done"]')).toHaveLength(4);
+
+    await showSnapshot(source, [request({ latest_round: round({ status: 'publication_unknown', cleanup_pending: false, cleanup_status: 'complete' }) })]);
+    const attention = lifecycle.querySelector('[aria-current="step"]');
+    expect(attention.textContent).toContain('Decide on draft');
+    expect(attention.getAttribute('data-state')).toBe('attention');
+    expect(attention.querySelector('[aria-hidden]').textContent).toBe('!');
+
+    await showSnapshot(source, [request({ latest_round: round({ status: 'published', cleanup_pending: false, cleanup_status: 'complete' }) })]);
+    expect(lifecycle.querySelector('[aria-current="step"]')).toBeNull();
+    expect(lifecycle.querySelectorAll('[data-state="done"]')).toHaveLength(5);
+    expect(within(lifecycle).queryByText('Published')).toBeNull();
+  });
+
   it.each([
     [preparedRequest(), 'Review options'],
     [request({ latest_round: round({ status: 'awaiting_decision' }) }), 'Read draft'],
@@ -788,11 +827,15 @@ describe('review requests page', () => {
     await screen.findAllByText('Review options');
     await clickMaterialButton(user, container.querySelector('.next-step'), 'Review options');
     await screen.findByText('Start review');
+    const lifecycle = screen.getByRole('list', { name: 'Review lifecycle' });
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Run review');
     await user.selectOptions(screen.getByLabelText('Review model for owner/repo #15'), 'model-beta');
     expect(screen.queryByText('Start review')).toBeNull();
     expect(screen.getByRole('heading', { name: 'Needs model' })).toBeTruthy();
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Prepare review');
     await user.selectOptions(screen.getByLabelText('Review model for owner/repo #15'), 'model-alpha');
     await screen.findByText('Start review');
+    expect(lifecycle.querySelector('[aria-current="step"]').textContent.trim()).toBe('Run review');
     await clickMaterialButton(user, container, 'Start review');
     expect(fetchMock.mock.calls[2][0]).toBe('/api/requests/run');
     expect(JSON.parse(fetchMock.mock.calls[2][1].body).model).toBe('model-alpha');

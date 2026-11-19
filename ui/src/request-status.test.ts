@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { reviewBlocker, reviewFailure, reviewProgressSteps, reviewSituation } from './request-status.js';
+import { reviewBlocker, reviewFailure, reviewLifecycleSteps, reviewProgressSteps, reviewSituation } from './request-status.js';
 
 const request = {
   head_sha: 'a'.repeat(40), revision: 2, authorization: 'one_round', discussion: {},
@@ -9,6 +9,44 @@ const preparation = {
   head_sha: request.head_sha, revision: 2, authorization: 'one_round', readiness: 'ready',
   validated_model: 'alpha', resolved_model: 'alpha', models: [{ model: 'alpha', agent: 'runner' }],
 };
+
+describe('review lifecycle', () => {
+  it.each([
+    { name: 'unobserved inputs', snapshot: { ...request, discussion: null }, states: ['current', 'pending', 'pending', 'pending', 'pending'] },
+    { name: 'permission needed', snapshot: { ...request, authorization: 'awaiting_lead' }, states: ['done', 'current', 'pending', 'pending', 'pending'] },
+    { name: 'preparation needed', snapshot: request, states: ['done', 'done', 'current', 'pending', 'pending'] },
+    { name: 'CI blocked', snapshot: request, prepared: { ...preparation, readiness: 'checks_failing' }, states: ['done', 'done', 'attention', 'pending', 'pending'] },
+    { name: 'ready to start', snapshot: request, prepared: preparation, states: ['done', 'done', 'done', 'current', 'pending'] },
+    { name: 'consumed one-round permission', snapshot: { ...request, authorization: 'awaiting_lead', latest_round: { status: 'running' } },
+      states: ['done', 'done', 'done', 'current', 'pending'] },
+    { name: 'stale saved draft', snapshot: { ...request, latest_round: { status: 'awaiting_decision', freshness: 'stale' } },
+      states: ['done', 'done', 'done', 'done', 'attention'] },
+    { name: 'publication recovery', snapshot: { ...request, latest_round: { status: 'publication_unknown' } },
+      states: ['done', 'done', 'done', 'done', 'attention'] },
+    { name: 'confirmed publication', snapshot: { ...request, latest_round: { status: 'published', head_sha: request.head_sha, revision: 2 } },
+      states: ['done', 'done', 'done', 'done', 'done'] },
+  ])('shows established and upcoming stages for $name', ({ snapshot, prepared, states }) => {
+    expect(reviewLifecycleSteps(reviewSituation(snapshot, prepared)).map((stage) => stage.state)).toEqual(states);
+  });
+
+  it.each(['published', 'rejected'])('starts the next lifecycle after a %s round when inputs change', (status) => {
+    const snapshot = { ...request, authorization: 'awaiting_lead', revision: 3,
+      latest_round: { status, head_sha: request.head_sha, revision: 2 } };
+    expect(reviewLifecycleSteps(reviewSituation(snapshot)).map((stage) => stage.state))
+      .toEqual(['done', 'current', 'pending', 'pending', 'pending']);
+  });
+
+  it('uses the new startup instead of an earlier completed round', () => {
+    const snapshot = { ...request, latest_round: { status: 'published', head_sha: request.head_sha, revision: 2 },
+      run: { status: 'starting' } };
+    expect(reviewLifecycleSteps(reviewSituation(snapshot)).map((stage) => stage.state))
+      .toEqual(['done', 'done', 'done', 'current', 'pending']);
+    expect(reviewLifecycleSteps(reviewSituation({ ...snapshot, run: { status: 'failed', failure: 'stale_preparation' } }))
+      .map((stage) => stage.state)).toEqual(['done', 'done', 'done', 'attention', 'pending']);
+    expect(reviewLifecycleSteps(reviewSituation(snapshot, preparation, false, 'beta')).map((stage) => stage.state))
+      .toEqual(['done', 'done', 'done', 'current', 'pending']);
+  });
+});
 
 describe('review progress steps', () => {
   const round = { id: 'r-current', status: 'starting', cleanup_pending: true, cleanup_status: 'in_progress' };
