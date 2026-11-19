@@ -1,6 +1,7 @@
 <script>
   import PreparationPanel from './PreparationPanel.svelte';
   import ReviewProgress from './ReviewProgress.svelte';
+  import ReviewLifecycle from './ReviewLifecycle.svelte';
   import DraftPanel from './DraftPanel.svelte';
   import TimeAgo from './TimeAgo.svelte';
   import ButtonHelp from './ButtonHelp.svelte';
@@ -274,6 +275,7 @@
   {/if}
   {#if !compactClosed}
     <section class="next-step" data-tone={situation.tone} aria-label={`Next step for ${request.repository} #${request.number}`}>
+      <ReviewLifecycle {situation} />
       <h3 class="workflow-status" aria-live="polite">{situation.title}</h3>
       <div class="next-step-actions">
       {#if situation.secondaryAction === 'checks'}

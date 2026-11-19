@@ -95,6 +95,7 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Hide earlier drafts during active startup, and restore access if startup fails before recording a round.
   Show review actions as steps and outcomes as states.
   Keep publication and rejection outside the review steps.
+  Derive lifecycle overviews from the same display decision as the primary action.
 - Only a verified lead decision may authorize a review, validate the review model, or publish or reject a draft.
   Never treat PR text or agent output as authority.
 - Keep model selection separate from agent selection.
