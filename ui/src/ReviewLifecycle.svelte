@@ -1,8 +1,9 @@
 <script>
   import { reviewLifecycleSteps } from './request-status.js';
+  import TimeAgo from './TimeAgo.svelte';
 
-  let { situation } = $props();
-  const steps = $derived(reviewLifecycleSteps(situation));
+  let { situation, request } = $props();
+  const steps = $derived(reviewLifecycleSteps(situation, request));
   const stateLabels = { done: 'Completed: ', pending: 'Upcoming: ', attention: 'Needs attention: ', unavailable: 'Unavailable: ' };
 </script>
 
@@ -10,7 +11,14 @@
   {#each steps as step (step.id)}
     <li data-state={step.state} aria-current={['current', 'attention'].includes(step.state) ? 'step' : undefined}>
       <span class="stage-marker" aria-hidden="true">{step.state === 'done' ? '✓' : step.state === 'attention' ? '!' : ''}</span>
-      <span class="stage-label"><span class="visually-hidden">{stateLabels[step.state] ?? ''}</span>{step.label}</span>
+      <span class="stage-content">
+        <span class="stage-label"><span class="visually-hidden">{stateLabels[step.state] ?? ''}</span>{step.label}</span>
+        {#if step.detail || step.timestamp != null}
+          <span class="stage-detail">
+            {step.detail ?? ''}{#if step.detail && step.timestamp != null}{' · '}{/if}{#if step.timestamp != null}<TimeAgo value={step.timestamp} />{/if}
+          </span>
+        {/if}
+      </span>
     </li>
   {/each}
 </ol>
@@ -62,12 +70,27 @@
     font-weight: 700;
   }
 
-  .stage-label {
+  .stage-content {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+    max-width: 100%;
     padding: 0 6px;
-    font-size: 0.83rem;
-    line-height: 1.45;
     text-align: center;
     overflow-wrap: anywhere;
+  }
+
+  .stage-label {
+    font-size: 0.83rem;
+    line-height: 1.45;
+  }
+
+  .stage-detail {
+    color: #5b5963;
+    font-size: 0.75rem;
+    font-weight: 400;
+    line-height: 1.45;
   }
 
   li[data-state='done'] {
@@ -109,11 +132,12 @@
 
     li {
       flex-direction: row;
+      align-items: flex-start;
       gap: 12px;
     }
 
-    .stage-label {
-      padding: 0;
+    .stage-content {
+      padding: 4px 0 0;
       text-align: left;
     }
 
@@ -121,7 +145,7 @@
       top: 33px;
       left: 13px;
       width: 2px;
-      height: 6px;
+      height: calc(100% - 22px);
     }
   }
 </style>
