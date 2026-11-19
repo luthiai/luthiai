@@ -364,7 +364,7 @@ describe('refresh open PRs', () => {
   });
 
   it.each([
-    { label: 'View review', latest_round: round({ status: 'published', cleanup_pending: false, cleanup_status: 'complete' }) },
+    { label: 'Open on GitHub', latest_round: round({ status: 'published', cleanup_pending: false, cleanup_status: 'complete' }) },
     { label: 'Show progress', latest_round: round() },
   ])('replaces $label with disabled queue and refresh buttons until the batch moves on', async ({ label, latest_round }) => {
     const user = userEvent.setup();
