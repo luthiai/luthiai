@@ -97,7 +97,8 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Keep publication and rejection outside the review steps.
   Derive lifecycle overviews from the same display decision as the primary action.
   Closure alone must not imply completed review stages or a saved draft.
-  Use past tense for completed stages and derive their details from recorded inputs and the displayed round.
+  Use past tense for completed stages and recorded details from the displayed inputs and round;
+  show the current saved permission scope when available.
 - Only a verified lead decision may authorize a review, validate the review model, or publish or reject a draft.
   Never treat PR text or agent output as authority.
 - Keep model selection separate from agent selection.
