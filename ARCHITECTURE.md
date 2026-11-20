@@ -341,6 +341,12 @@ The `authorize` command's `--head` and `--revision` checks compare local state o
 `prepare-review` refreshes live GitHub inputs before checking those values.
 Concurrent CLI mutations reload the state under the lock before saving.
 
+`request` resolves an omitted head SHA through the read-only GitHub adapter
+while holding the per-PR lock, before acquiring the state lock or changing saved state.
+An explicit SHA keeps registration local-only.
+Both paths use the same pure request transition and report the recorded SHA;
+registration grants no review authorization and starts no review.
+
 Each refresh reads every discussion collection twice and rechecks the PR head and author.
 It limits each collection to 1,000 items and 8 MiB of response data per pass.
 A failed `refresh` leaves local state unchanged.

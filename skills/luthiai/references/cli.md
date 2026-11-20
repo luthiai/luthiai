@@ -44,7 +44,7 @@ For a PR the user has asked LuthiAI to manage:
 
 ```sh
 luthiai github-pr owner/repo 42 --diff --checks
-luthiai request owner/repo 42 HEAD_SHA
+luthiai request owner/repo 42
 luthiai refresh owner/repo 42
 luthiai status owner/repo 42
 luthiai prepare-review owner/repo 42
@@ -52,6 +52,12 @@ luthiai prepare-review owner/repo 42
 
 Replace placeholders with inspected output values; do not execute them literally.
 `request` records a new request or updates its head, but does not authorize a review.
+When the optional SHA is omitted, it fetches the current PR head from GitHub
+and reports the recorded SHA in its output.
+GitHub lookup failures leave the saved state unchanged.
+Use `luthiai request owner/repo 42 HEAD_SHA` to record an explicitly inspected head
+without a GitHub lookup.
+Registration starts no review; refresh and inspect the current inputs before lead authorization.
 `refresh` observes an existing request's head and author discussion.
 Its first observation establishes the discussion baseline and advances the revision.
 Changed inputs can clear one-round authorization and model validation.
@@ -174,7 +180,7 @@ Review recovery never restores consumed one-round authorization.
 | Command | Purpose |
 | --- | --- |
 | `github-pr REPOSITORY PR [--checks] [--diff \| --since HEAD_SHA]` | Inspect live GitHub inputs without reading or changing local state. |
-| `request REPOSITORY PR HEAD_SHA` | Record a request at the inspected head. |
+| `request REPOSITORY PR [HEAD_SHA]` | Record a request using the current GitHub head, or an explicit SHA without a GitHub lookup. Report the recorded SHA. |
 | `refresh REPOSITORY PR` | Save current head and author discussion fingerprints. |
 | `status REPOSITORY PR` / `list` | Inspect saved request and latest-round state, or list requests. |
 | `prepare-review REPOSITORY PR` | Refresh inputs, report readiness, and propose a model. |

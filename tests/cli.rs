@@ -67,6 +67,53 @@ fn observe_empty_discussion(state_file: &Path, head: &str) -> u64 {
 }
 
 #[test]
+fn explicit_request_head_is_local_only_and_prints_the_recorded_sha() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("state.json");
+    for message in ["Recorded owner/repo#42", "already has this head SHA"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_luthiai"))
+            .arg("--state-file")
+            .arg(&state_file)
+            .args(["request", "owner/repo", "42", HEAD_A])
+            .env("LUTHIAI_GITHUB_TOKEN_RO", "bad\nheader")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(stdout.contains(message), "{stdout}");
+        assert!(stdout.contains(&format!("head: {HEAD_A}")), "{stdout}");
+    }
+}
+
+#[test]
+fn request_lookup_errors_are_actionable_and_preserve_saved_state() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("state.json");
+    for existing in [false, true] {
+        if existing {
+            run(&state_file, &["request", "owner/repo", "42", HEAD_A]);
+        }
+        let before = std::fs::read(&state_file).ok();
+        let secret = "secret\nwith-newline";
+        let output = Command::new(env!("CARGO_BIN_EXE_luthiai"))
+            .arg("--state-file")
+            .arg(&state_file)
+            .args(["request", "owner/repo", "42"])
+            .env("LUTHIAI_GITHUB_TOKEN_RO", secret)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("owner/repo#42"), "{stderr}");
+        assert!(stderr.contains("LUTHIAI_GITHUB_TOKEN_RO"), "{stderr}");
+        assert!(stderr.contains("invalid header characters"), "{stderr}");
+        assert!(!stderr.contains(secret));
+        assert!(output.stdout.is_empty());
+        assert_eq!(std::fs::read(&state_file).ok(), before);
+    }
+}
+
+#[test]
 fn config_path_uses_platform_config_independently_of_state_override() {
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("state.json");

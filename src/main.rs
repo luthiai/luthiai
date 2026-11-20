@@ -45,11 +45,12 @@ struct Cli {
 enum Command {
     /// Serve the local graphical interface and API over HTTP.
     Gui,
-    /// Manually record a PR review request at its current head SHA.
+    /// Record a PR review request, fetching its current head from GitHub by default.
     Request {
         repository: String,
         pr: u64,
-        head_sha: String,
+        /// Explicit head SHA; skips the GitHub lookup and records local state only.
+        head_sha: Option<String>,
     },
     /// Refresh an existing request's head and author discussion from GitHub.
     Refresh { repository: String, pr: u64 },
@@ -216,14 +217,14 @@ fn run(cli: Cli) -> Result<()> {
         } => {
             let state_file = storage::resolve_path(state_file)?;
             let key = PrKey::new(repository, pr)?;
-            let head_sha = HeadSha::new(head_sha)?;
-            let _pr_lock = storage::pr_lock(&state_file, &key)?;
-            let _lock = storage::lock(&state_file)?;
-            let mut state = storage::load(&state_file)?;
-            let outcome = state.record_request(key.clone(), head_sha)?;
-            if outcome != RecordOutcome::Unchanged {
-                storage::save(&state_file, &state)?;
-            }
+            let head_sha = head_sha.map(HeadSha::new).transpose()?;
+            let (head_sha, outcome) =
+                request_commands::record_request(&state_file, &key, head_sha, |key| {
+                    Ok(github::GithubClient::new()?
+                        .pull_request(key)?
+                        .head_sha()
+                        .clone())
+                })?;
             match outcome {
                 RecordOutcome::New => println!("Recorded {key}; awaiting lead authorization."),
                 RecordOutcome::Unchanged => println!("{key} already has this head SHA."),
@@ -234,6 +235,7 @@ fn run(cli: Cli) -> Result<()> {
                     println!("Updated {key}; authorization is unchanged.")
                 }
             }
+            println!("  head: {head_sha}");
         }
         Command::Refresh { repository, pr } => {
             let state_file = storage::resolve_path(state_file)?;
@@ -699,6 +701,23 @@ mod tests {
         write_prompt_change_notice,
     };
     use luthiai::config::PromptSelection;
+
+    #[test]
+    fn request_accepts_an_omitted_or_explicit_head() {
+        use clap::Parser;
+        let head = "a".repeat(40);
+        for explicit in [false, true] {
+            let mut args = vec!["luthiai", "request", "owner/repo", "42"];
+            if explicit {
+                args.push(&head);
+            }
+            let parsed = super::Cli::try_parse_from(args).unwrap();
+            let super::Command::Request { head_sha, .. } = parsed.command else {
+                panic!("wrong command");
+            };
+            assert_eq!(head_sha.as_deref(), explicit.then_some(head.as_str()));
+        }
+    }
 
     #[test]
     fn reconfirming_without_prompt_reports_the_change_and_restore_option() {
