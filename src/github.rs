@@ -1845,7 +1845,7 @@ mod tests {
             SelectedValid,
             SelectedShared,
             SelectedIgnoredChecks,
-            SelectedUnignoredChecks,
+            SelectedPendingUnlistedCheck,
             SelectedInvalidArchive,
             ProposedValid,
             ProposedInvalidArchive,
@@ -1872,7 +1872,7 @@ mod tests {
             Case::SelectedValid,
             Case::SelectedShared,
             Case::SelectedIgnoredChecks,
-            Case::SelectedUnignoredChecks,
+            Case::SelectedPendingUnlistedCheck,
             Case::SelectedInvalidArchive,
             Case::ProposedValid,
             Case::ProposedInvalidArchive,
@@ -1883,7 +1883,7 @@ mod tests {
                 Case::SelectedValid
                     | Case::SelectedShared
                     | Case::SelectedIgnoredChecks
-                    | Case::SelectedUnignoredChecks
+                    | Case::SelectedPendingUnlistedCheck
                     | Case::ProposedValid
             );
             let select_model = matches!(
@@ -1891,7 +1891,7 @@ mod tests {
                 Case::SelectedValid
                     | Case::SelectedShared
                     | Case::SelectedIgnoredChecks
-                    | Case::SelectedUnignoredChecks
+                    | Case::SelectedPendingUnlistedCheck
                     | Case::SelectedInvalidArchive
                     | Case::SelectedBlocked
             );
@@ -1945,7 +1945,7 @@ mod tests {
             let mut runs = successful_check_runs(1, 1);
             if matches!(
                 case,
-                Case::SelectedIgnoredChecks | Case::SelectedUnignoredChecks
+                Case::SelectedIgnoredChecks | Case::SelectedPendingUnlistedCheck
             ) {
                 runs.push(serde_json::json!({
                     "id": 2,
@@ -2048,7 +2048,7 @@ mod tests {
                     ));
                     assert!(state.get(&key).unwrap().model_validation().is_none());
                 }
-                Case::SelectedUnignoredChecks => {
+                Case::SelectedPendingUnlistedCheck => {
                     assert!(matches!(
                         result.err().unwrap(),
                         RoundError::Validation(ModelValidationError::Blocked(

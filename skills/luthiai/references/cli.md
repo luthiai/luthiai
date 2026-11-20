@@ -108,6 +108,8 @@ luthiai show-draft owner/repo 42 --round ROUND_ID
 One-round authorization is consumed when dispatch is recorded.
 The repository's configured [`ignored_ci_checks`](configuration.md#ci-check-exclusions)
 are excluded from preparation and startup readiness.
+`prepare-review` lists the configured exclusions alongside the filtered check summary,
+including names absent from the current results.
 Remaining pending or failed checks, and an empty remaining result set, are not green.
 
 Scope is incremental after the latest locally confirmed publication, using its reviewed commit after an ancestry check.

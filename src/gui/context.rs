@@ -143,6 +143,7 @@ mod tests {
             authorization: luthiai::Authorization::AwaitingLead,
             configuration_sha256: PromptHash::new("a".repeat(64)).unwrap(),
             checks: CheckSummary::Green,
+            ignored_ci_checks: vec![],
             readiness: Readiness::AwaitingAuthorization,
             readiness_message: Readiness::AwaitingAuthorization.to_string(),
             proposed_model: ModelId::new("model-alpha").unwrap(),

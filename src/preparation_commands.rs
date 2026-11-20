@@ -5,8 +5,8 @@ use luthiai::{
     Authorization, ModelValidationError, PrKey, RefreshOutcome, ReviewRequest, StateError,
     archive::{self, ArchiveError},
     config::{
-        AgentId, AgentKind, ConfigError, ModelId, PromptHash, PromptSelection, ResolvedReviewModel,
-        ReviewConfig, VmArchive,
+        AgentId, AgentKind, CiCheckName, ConfigError, ModelId, PromptHash, PromptSelection,
+        ResolvedReviewModel, ReviewConfig, VmArchive,
     },
     github::{GithubClient, GithubError, PullRequest, checks::CheckSummary},
     preparation::Preparation,
@@ -122,6 +122,7 @@ pub struct PreparedReview {
     changes: RefreshOutcome,
     preparation: Preparation,
     checks: CheckSummary,
+    ignored_ci_checks: Vec<CiCheckName>,
     models: Vec<PreparedModel>,
     resolved_index: usize,
     configuration_sha256: PromptHash,
@@ -155,6 +156,9 @@ impl PreparedReview {
     }
     pub fn checks(&self) -> CheckSummary {
         self.checks
+    }
+    pub fn ignored_ci_checks(&self) -> &[CiCheckName] {
+        &self.ignored_ci_checks
     }
     pub fn models(&self) -> &[PreparedModel] {
         &self.models
@@ -290,6 +294,7 @@ pub fn prepare(
         changes,
         preparation,
         checks,
+        ignored_ci_checks: config.ignored_ci_checks_for(key)?.to_vec(),
         models,
         resolved_index,
         configuration_sha256,
