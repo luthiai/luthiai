@@ -1883,6 +1883,7 @@ describe('review requests page', () => {
     expect(document.getElementById(start.getAttribute('aria-describedby')).textContent)
       .toContain(reviewMode === 'full' ? 'Start a full PR review.'
         : 'Automatic scope reviews changes since the last published review, or the full PR when needed.');
+    expect(document.getElementById(start.getAttribute('aria-describedby')).textContent).not.toContain('Prompt:');
     expect(fetchMock).toHaveBeenCalledTimes(2);
     const run = await clickMaterialButton(user, container, 'Start review');
     expect(run.disabled).toBe(true);
