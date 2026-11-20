@@ -14,7 +14,9 @@ use anyhow::Result;
 use clap::{Parser, Subcommand, ValueEnum};
 use luthiai::{
     Authorization, AuthorizationScope, CommentSource, HeadSha, InputRevision, PrKey, RecordOutcome,
-    RefreshOutcome, StateError, config::ModelId, github, round,
+    RefreshOutcome, StateError,
+    config::{ModelId, PromptSelection},
+    github, round,
 };
 use std::num::NonZeroU64;
 use std::path::PathBuf;
@@ -369,7 +371,7 @@ fn run(cli: Cli) -> Result<()> {
                     )
                     .with_prompt(
                         prompt
-                            .map(luthiai::config::PromptSelection::try_from)
+                            .map(PromptSelection::try_from)
                             .transpose()?
                             .unwrap_or_default(),
                     ),
@@ -586,15 +588,12 @@ fn run_prepare(
     println!("  authorization: {}", request.authorization());
     println!("  checks: {}", report.checks());
     println!("  review prompt: {}", report.prompt_selection());
-    if let Some(previous) = report.replaced_prompt() {
-        println!(
-            "  note: review prompt changed from {previous} to {}.",
-            report.prompt_selection()
-        );
-        if report.prompts().contains(previous) {
-            println!("  confirm with --prompt {previous} to restore the previous prompt.");
-        }
-    }
+    write_prompt_change_notice(
+        &mut std::io::stdout().lock(),
+        report.previous_prompt(),
+        report.prompt_selection(),
+        report.prompts(),
+    )?;
     println!(
         "  available prompts: {}",
         report
@@ -633,6 +632,28 @@ fn run_prepare(
     Ok(())
 }
 
+fn write_prompt_change_notice(
+    output: &mut impl std::io::Write,
+    previous: Option<&PromptSelection>,
+    current: &PromptSelection,
+    available: &[PromptSelection],
+) -> std::io::Result<()> {
+    let Some(previous) = previous.filter(|previous| *previous != current) else {
+        return Ok(());
+    };
+    writeln!(
+        output,
+        "  note: review prompt changed from {previous} to {current}."
+    )?;
+    if available.contains(previous) {
+        writeln!(
+            output,
+            "  add --prompt {previous} when confirming to restore the previous prompt."
+        )?;
+    }
+    Ok(())
+}
+
 pub(crate) fn escape_terminal_controls(value: &str) -> String {
     let mut rendered = String::with_capacity(value.len());
     for character in value.chars() {
@@ -662,7 +683,90 @@ fn escape_terminal_field(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{escape_diff_for_terminal, escape_terminal_controls, escape_terminal_field};
+    use super::{
+        escape_diff_for_terminal, escape_terminal_controls, escape_terminal_field,
+        write_prompt_change_notice,
+    };
+    use luthiai::config::PromptSelection;
+
+    #[test]
+    fn reconfirming_without_prompt_reports_the_change_and_restore_option() {
+        use clap::Parser;
+        let head = "a".repeat(40);
+        let parsed = super::Cli::try_parse_from([
+            "luthiai",
+            "prepare-review",
+            "owner/repo",
+            "42",
+            "--model",
+            "model-alpha",
+            "--head",
+            &head,
+            "--revision",
+            "2",
+        ])
+        .unwrap();
+        let super::Command::PrepareReview {
+            model,
+            prompt,
+            head,
+            revision,
+            ..
+        } = parsed.command
+        else {
+            panic!("wrong command");
+        };
+        assert!(prompt.is_none());
+        let selection = luthiai::round::ModelSelection::new(
+            luthiai::config::ModelId::new(model.unwrap()).unwrap(),
+            luthiai::HeadSha::new(head.unwrap()).unwrap(),
+            luthiai::InputRevision::new(revision.unwrap()).unwrap(),
+        );
+        let saved = PromptSelection::try_from("github-actions".to_owned()).unwrap();
+        let available = [PromptSelection::Repository, saved.clone()];
+        let mut output = Vec::new();
+        write_prompt_change_notice(
+            &mut output,
+            Some(&saved),
+            selection.prompt_selection(),
+            &available,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "  note: review prompt changed from github-actions to repository.\n  add --prompt github-actions when confirming to restore the previous prompt.\n"
+        );
+    }
+
+    #[test]
+    fn removed_saved_prompt_reports_the_change_without_a_restore_option() {
+        let saved = PromptSelection::try_from("github-actions".to_owned()).unwrap();
+        let mut output = Vec::new();
+        write_prompt_change_notice(
+            &mut output,
+            Some(&saved),
+            &PromptSelection::Repository,
+            &[PromptSelection::Repository],
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(output).unwrap(),
+            "  note: review prompt changed from github-actions to repository.\n"
+        );
+    }
+
+    #[test]
+    fn unchanged_or_missing_saved_prompt_has_no_change_notice() {
+        let shared = PromptSelection::try_from("github-actions".to_owned()).unwrap();
+        let available = [PromptSelection::Repository, shared.clone()];
+        for current in &available {
+            for previous in [None, Some(current)] {
+                let mut output = Vec::new();
+                write_prompt_change_notice(&mut output, previous, current, &available).unwrap();
+                assert!(output.is_empty());
+            }
+        }
+    }
 
     #[test]
     fn full_review_is_an_explicit_cli_override() {

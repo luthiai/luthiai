@@ -126,7 +126,7 @@ pub struct PreparedReview {
     resolved_index: usize,
     configuration_sha256: PromptHash,
     prompt: PromptSelection,
-    replaced_prompt: Option<PromptSelection>,
+    previous_prompt: Option<PromptSelection>,
     prompts: Vec<PromptSelection>,
 }
 
@@ -134,8 +134,8 @@ impl PreparedReview {
     pub fn prompt_selection(&self) -> &PromptSelection {
         &self.prompt
     }
-    pub fn replaced_prompt(&self) -> Option<&PromptSelection> {
-        self.replaced_prompt.as_ref()
+    pub fn previous_prompt(&self) -> Option<&PromptSelection> {
+        self.previous_prompt.as_ref()
     }
     pub fn prompts(&self) -> &[PromptSelection] {
         &self.prompts
@@ -268,7 +268,6 @@ pub fn prepare(
         state = current;
     }
     let prompt = report.resolved().prompt_selection().clone();
-    let replaced_prompt = previous_prompt.filter(|previous| previous != &prompt);
     let models: Vec<_> = config
         .review_models_for_prompt(key, &prompt)?
         .iter()
@@ -295,7 +294,7 @@ pub fn prepare(
         resolved_index,
         configuration_sha256,
         prompt,
-        replaced_prompt,
+        previous_prompt,
         prompts: config.prompt_choices(),
     })
 }
