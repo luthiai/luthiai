@@ -26,6 +26,7 @@ interface Discussion {
 interface ModelValidation {
   model: string;
   agent: string;
+  prompt?: string;
 }
 
 interface RequestContext {
@@ -77,6 +78,8 @@ interface Preparation {
   validated_model: ValidatedModel | null;
   resolved_model: string;
   models: ModelValidation[];
+  prompt: string;
+  prompts: string[];
 }
 
 interface RequestSnapshot {
@@ -188,6 +191,7 @@ function preparation(overrides: Partial<Preparation> = {}): Preparation {
     configuration_sha256: 'c'.repeat(64), checks: 'green',
     readiness: 'model_validation_required', readiness_message: 'lead model validation is required',
     proposed_model: 'model-alpha', proposal_matches_coauthor: false, validated_model: null,
+    prompt: 'repository', prompts: ['repository'],
     resolved_model: 'model-alpha', models: [
       { model: 'model-alpha', agent: 'claude' }, { model: 'model-beta', agent: 'claude-alt' },
     ], ...overrides,
@@ -944,6 +948,45 @@ describe('review requests page', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it.each([['repository', 'github-actions'], ['github-actions', 'repository']])('confirms switching from %s to %s and starts with the saved prompt', async (initialPrompt, nextPrompt) => {
+    const user = userEvent.setup();
+    sessionStorage.setItem('luthiai-session', 'saved-token');
+    let finishConfirmation: FinishFetch;
+    const ready = (prompt: string) => preparation({ prompt, prompts: ['repository', 'github-actions'], readiness: 'ready', validated_model: 'model-alpha' });
+    const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => ready(initialPrompt) })
+      .mockImplementationOnce(() => new Promise((resolve) => { finishConfirmation = resolve; }))
+      .mockResolvedValueOnce({ ok: true, status: 202, json: async () => ({ accepted: true }) });
+    vi.stubGlobal('fetch', fetchMock);
+    const { container } = render(App);
+    const source = FakeEventSource.instances[0];
+    await showSnapshot(source, [preparedRequest({ validated_model: { model: 'model-alpha', agent: 'claude', prompt: initialPrompt } })]);
+    await screen.findAllByText('Review options');
+    await clickMaterialButton(user, container, 'Review options');
+    let panel = await screen.findByRole('region', { name: 'Review options for owner/repo #15' });
+    const prompt = within(panel).getByLabelText('Review prompt for owner/repo #15') as HTMLSelectElement;
+    expect(prompt.value).toBe(initialPrompt);
+    expect((within(panel).getByText('Confirm choices') as MaterialControl).disabled).toBe(true);
+    await user.selectOptions(prompt, nextPrompt);
+    expect((within(panel).getByText('Confirm choices') as MaterialControl).disabled).toBe(false);
+    expect(screen.queryByText('Start review')).toBeNull();
+    await clickMaterialButton(user, panel, 'Close review options');
+    await clickMaterialButton(user, container, 'Review options');
+    panel = screen.getByRole('region', { name: 'Review options for owner/repo #15' });
+    expect((within(panel).getByLabelText('Review prompt for owner/repo #15') as HTMLSelectElement).value).toBe(nextPrompt);
+    await clickMaterialButton(user, panel, 'Confirm choices');
+    expect((within(panel).getByLabelText('Review prompt for owner/repo #15') as HTMLSelectElement).disabled).toBe(true);
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toMatchObject({ model: 'model-alpha', prompt: nextPrompt, head_sha: 'a'.repeat(40), revision: 2 });
+    await act(() => finishConfirmation({ ok: true, json: async () => ready(nextPrompt) }));
+    await showSnapshot(source, [preparedRequest({ validated_model: { model: 'model-alpha', agent: 'claude', prompt: nextPrompt } })]);
+    await waitFor(() => expect(screen.queryByRole('region', { name: 'Review options for owner/repo #15' })).toBeNull());
+    const start = [...container.querySelectorAll('md-filled-button')].find((button) => button.textContent.trim() === 'Start review');
+    expect(document.getElementById(start.getAttribute('aria-describedby')).textContent).toContain(`Prompt: ${nextPrompt === 'repository' ? 'repository guidance' : nextPrompt}`);
+    await clickMaterialButton(user, container, 'Start review');
+    expect(fetchMock.mock.calls[3][0]).toBe('/api/requests/run');
+    expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toMatchObject({ model: 'model-alpha', prompt: nextPrompt, review_mode: 'auto' });
+  });
+
   it.each(['auto', 'full'])('confirms a scope change after reopening a model confirmed with %s scope', async (initialScope) => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');
@@ -989,6 +1032,7 @@ describe('review requests page', () => {
     expect(fetchMock.mock.calls[3][0]).toBe('/api/requests/validate-model');
     expect(JSON.parse(fetchMock.mock.calls[3][1].body)).toEqual({
       key: { repository: 'owner/repo', number: 15 }, model: 'model-alpha',
+      prompt: 'repository',
       head_sha: 'a'.repeat(40), revision: 2,
       rules: { authorization: 'one_round', configuration_sha256: 'c'.repeat(64) },
     });
@@ -1500,6 +1544,7 @@ describe('review requests page', () => {
     expect(fetchMock.mock.calls[2][0]).toBe('/api/requests/validate-model');
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
       key: { repository: 'owner/repo', number: 15 }, model: 'model-beta',
+      prompt: 'repository',
       head_sha: 'a'.repeat(40), revision: 2,
       rules: { authorization: 'one_round', configuration_sha256: 'c'.repeat(64) },
     });
@@ -1534,7 +1579,7 @@ describe('review requests page', () => {
     const user = userEvent.setup();
     sessionStorage.setItem('luthiai-session', 'saved-token');
     const fetchMock = vi.fn().mockResolvedValueOnce({ ok: true })
-      .mockResolvedValueOnce({ ok: true, json: async () => preparation({ readiness, checks, readiness_message }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => preparation({ readiness, checks, readiness_message, prompts: ['repository', 'github-actions'] }) });
     vi.stubGlobal('fetch', fetchMock);
     const { container } = render(App);
     await showSnapshot(FakeEventSource.instances[0], [preparedRequest()]);
@@ -1543,6 +1588,10 @@ describe('review requests page', () => {
     const panel = await screen.findByRole('region', { name: 'Review options for owner/repo #15' });
     expect(within(panel).getByText(readiness_message, { selector: 'p' })).toBeTruthy();
     expect((screen.getByLabelText('Review model for owner/repo #15') as HTMLSelectElement).disabled).toBe(true);
+    const prompt = screen.getByLabelText('Review prompt for owner/repo #15') as HTMLSelectElement;
+    expect(prompt.disabled).toBe(true);
+    await user.selectOptions(prompt, 'github-actions');
+    expect(prompt.value).toBe('repository');
     const scope = screen.getByLabelText('Review scope for owner/repo #15') as HTMLSelectElement;
     expect(scope.disabled).toBe(true);
     await user.selectOptions(scope, 'full');
@@ -1845,6 +1894,7 @@ describe('review requests page', () => {
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
       key: { repository: 'owner/repo', number: 15 }, model: 'model-beta', head_sha: 'a'.repeat(40), revision: 2,
       review_mode: reviewMode,
+      prompt: 'repository',
       rules: { authorization: 'one_round', configuration_sha256: 'c'.repeat(64) },
     });
     await clickMaterialButton(user, container, 'Starting review…');
@@ -1858,6 +1908,7 @@ describe('review requests page', () => {
   it.each([
     { head_sha: 'b'.repeat(40), revision: 3 }, { revision: 3 }, { authorization: 'pr_cycle' },
     { validated_model: { model: 'model-beta', agent: 'claude-alt' } },
+    { validated_model: { model: 'model-alpha', agent: 'claude', prompt: 'github-actions' } },
     { validated_model: null },
     { run: { status: 'starting' } }, { run: { status: 'running', round_id: 'r-example' } },
     { publication: { status: 'active' } },

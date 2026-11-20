@@ -1,7 +1,9 @@
 //! Review requests, authorization, model validation, and round decision transitions.
 
 use crate::archive::VerifiedArchive;
-use crate::config::{AgentId, ModelId, PromptHash, ResolvedReviewModel, VmArchive};
+use crate::config::{
+    AgentId, ModelId, PromptHash, PromptSelection, ResolvedReviewModel, VmArchive,
+};
 use crate::model::{
     Authorization, AuthorizationScope, HeadSha, InputRevision, ObservedDiscussion, PrKey,
     StateError,
@@ -190,6 +192,8 @@ fn deserialize_model_validation<'de, D: Deserializer<'de>>(
 #[serde(deny_unknown_fields)]
 pub struct ModelValidation {
     model: ModelId,
+    #[serde(default)]
+    prompt: PromptSelection,
     agent: AgentId,
     head_sha: HeadSha,
     revision: InputRevision,
@@ -202,6 +206,10 @@ pub struct ModelValidation {
 }
 
 impl ModelValidation {
+    pub fn prompt_selection(&self) -> &PromptSelection {
+        &self.prompt
+    }
+
     pub fn model(&self) -> &ModelId {
         &self.model
     }
@@ -220,6 +228,7 @@ impl ModelValidation {
 
     pub fn matches(&self, choice: &ResolvedReviewModel<'_>) -> bool {
         self.model == *choice.model().id()
+            && self.prompt == *choice.prompt_selection()
             && self.agent == *choice.agent().id()
             && self.prompt_sha256 == *choice.prompt().hash()
             && self.format_sha256
@@ -231,6 +240,7 @@ impl ModelValidation {
 
     fn matches_round(&self, round: &RoundRecord) -> bool {
         self.model == *round.model()
+            && self.prompt == *round.prompt_selection()
             && self.agent == *round.agent()
             && self.head_sha == *round.head_sha()
             && self.revision == round.revision()
@@ -490,6 +500,7 @@ impl State {
                 .model_validation()
                 .is_some_and(|validation| validation.matches(choice))
             || round.model() != choice.model().id()
+            || round.prompt_selection() != choice.prompt_selection()
             || round.agent() != choice.agent().id()
             || round.prompt_hash() != choice.prompt().hash()
             || round.format_hash()
@@ -992,6 +1003,7 @@ impl State {
         }
         let validation = ModelValidation {
             model: choice.model().id().clone(),
+            prompt: choice.prompt_selection().clone(),
             agent: choice.agent().id().clone(),
             head_sha: inspected_head.clone(),
             revision: inspected_revision,

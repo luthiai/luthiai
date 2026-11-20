@@ -30,6 +30,14 @@ pub enum ConfigError {
     )]
     InvalidAgentId(String),
     #[error(
+        "invalid shared prompt ID {0:?}; use 1-64 lowercase ASCII letters, digits, hyphens, or underscores, starting with a letter; repository is reserved"
+    )]
+    InvalidPromptId(String),
+    #[error("duplicate shared prompt ID {0}")]
+    DuplicatePrompt(PromptId),
+    #[error("shared prompt {0} is not configured")]
+    PromptNotConfigured(PromptId),
+    #[error(
         "invalid model ID {0:?}; use 1-128 ASCII letters, digits, dots, slashes, colons, hyphens, or underscores, starting with a letter"
     )]
     InvalidModelId(String),
@@ -43,20 +51,20 @@ pub enum ConfigError {
     InvalidArchivePath(PathBuf),
     #[error("SHA-256 must contain 64 hexadecimal characters")]
     InvalidArchiveChecksum,
-    #[error("repository {0} has an empty or oversized review prompt (maximum 64 KiB)")]
+    #[error("{0} has an empty or oversized review prompt (maximum 64 KiB)")]
     InvalidPrompt(String),
-    #[error("repository {repository} prompt_file must name a regular file: {}", path.display())]
-    InvalidPromptFile { repository: String, path: PathBuf },
-    #[error("reading prompt file {} for repository {repository}: {source}", path.display())]
+    #[error("{owner} prompt_file must name a regular file: {}", path.display())]
+    InvalidPromptFile { owner: String, path: PathBuf },
+    #[error("reading prompt file {} for {owner}: {source}", path.display())]
     ReadPrompt {
-        repository: String,
+        owner: String,
         path: PathBuf,
         #[source]
         source: io::Error,
     },
-    #[error("prompt file {} for repository {repository} is not UTF-8: {source}", path.display())]
+    #[error("prompt file {} for {owner} is not UTF-8: {source}", path.display())]
     PromptEncoding {
-        repository: String,
+        owner: String,
         path: PathBuf,
         #[source]
         source: std::string::FromUtf8Error,
@@ -124,12 +132,7 @@ pub struct AgentId(String);
 impl AgentId {
     pub fn new(value: impl Into<String>) -> Result<Self, ConfigError> {
         let value = value.into();
-        let valid = (1..=64).contains(&value.len())
-            && value.as_bytes()[0].is_ascii_lowercase()
-            && value.bytes().all(|byte| {
-                byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-            });
-        if !valid {
+        if !valid_config_id(&value) {
             return Err(ConfigError::InvalidAgentId(value));
         }
         Ok(Self(value))
@@ -151,6 +154,83 @@ impl TryFrom<String> for AgentId {
 impl fmt::Display for AgentId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.0)
+    }
+}
+
+fn valid_config_id(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value.as_bytes()[0].is_ascii_lowercase()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+}
+
+/// A reusable prompt's stable identifier; `repository` names the default selection.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct PromptId(String);
+
+impl PromptId {
+    pub fn new(value: impl Into<String>) -> Result<Self, ConfigError> {
+        let value = value.into();
+        if value == "repository" || !valid_config_id(&value) {
+            return Err(ConfigError::InvalidPromptId(value));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for PromptId {
+    type Error = ConfigError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
+impl fmt::Display for PromptId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+/// The lead's guidance choice, independent of model, reviewer, and review scope.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub enum PromptSelection {
+    #[default]
+    Repository,
+    Shared(PromptId),
+}
+
+impl TryFrom<String> for PromptSelection {
+    type Error = ConfigError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value == "repository" {
+            Ok(Self::Repository)
+        } else {
+            PromptId::new(value).map(Self::Shared)
+        }
+    }
+}
+
+impl From<PromptSelection> for String {
+    fn from(value: PromptSelection) -> Self {
+        value.to_string()
+    }
+}
+
+impl fmt::Display for PromptSelection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Repository => f.write_str("repository"),
+            Self::Shared(id) => id.fmt(f),
+        }
     }
 }
 
@@ -399,6 +479,7 @@ pub struct ReviewConfig {
     models: Vec<Model>,
     agents: Vec<Agent>,
     repositories: Vec<RepositoryConfig>,
+    prompts: Vec<SharedPrompt>,
     execution: ExecutionConfig,
     publisher_login: Option<String>,
     hash: PromptHash,
@@ -811,6 +892,12 @@ struct Runner {
     archive: VmArchive,
 }
 
+#[derive(Debug)]
+struct SharedPrompt {
+    id: PromptId,
+    text: String,
+}
+
 pub struct ResolvedReviewModel<'a> {
     repository: &'a str,
     model: &'a Model,
@@ -818,10 +905,15 @@ pub struct ResolvedReviewModel<'a> {
     archive: &'a VmArchive,
     execution: &'a ExecutionConfig,
     project_prompt: &'a str,
+    prompt_selection: PromptSelection,
     prompt: crate::prompt_builder::BuiltPrompt,
 }
 
 impl<'a> ResolvedReviewModel<'a> {
+    pub fn prompt_selection(&self) -> &PromptSelection {
+        &self.prompt_selection
+    }
+
     pub fn project_prompt(&self) -> &'a str {
         self.project_prompt
     }
@@ -858,6 +950,8 @@ struct RawConfig {
     models: Vec<RawModel>,
     agents: Vec<RawAgent>,
     repositories: Vec<RawRepository>,
+    #[serde(default)]
+    prompts: Vec<RawPrompt>,
     execution: RawExecution,
     #[serde(default)]
     publisher_login: Option<String>,
@@ -890,6 +984,13 @@ struct RawRepository {
     prompt_file: PathBuf,
     review_models: Vec<String>,
     runners: Vec<RawRunner>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPrompt {
+    id: PromptId,
+    prompt_file: PathBuf,
 }
 
 #[derive(Deserialize)]
@@ -994,6 +1095,23 @@ impl ReviewConfig {
                 runner,
             });
         }
+        let mut prompts = Vec::with_capacity(raw.prompts.len());
+        let mut seen_prompts = HashSet::new();
+        for raw_prompt in raw.prompts {
+            if !seen_prompts.insert(raw_prompt.id.clone()) {
+                return Err(ConfigError::DuplicatePrompt(raw_prompt.id));
+            }
+            let text = read_prompt(
+                &format!("shared prompt {}", raw_prompt.id),
+                &raw_prompt.prompt_file,
+                &config_directory,
+            )?;
+            hash.update(PromptHash::of(&text).as_str().as_bytes());
+            prompts.push(SharedPrompt {
+                id: raw_prompt.id,
+                text,
+            });
+        }
         let mut seen_repositories = HashSet::new();
         let mut repositories = Vec::with_capacity(raw.repositories.len());
         for raw_repository in raw.repositories {
@@ -1004,7 +1122,11 @@ impl ReviewConfig {
             if !seen_repositories.insert(name.clone()) {
                 return Err(ConfigError::DuplicateRepository(name));
             }
-            let prompt = read_prompt(&name, &raw_repository.prompt_file, &config_directory)?;
+            let prompt = read_prompt(
+                &format!("repository {name}"),
+                &raw_repository.prompt_file,
+                &config_directory,
+            )?;
             hash.update(PromptHash::of(&prompt).as_str().as_bytes());
             if raw_repository.review_models.is_empty() {
                 return Err(ConfigError::NoReviewModels(name));
@@ -1060,6 +1182,7 @@ impl ReviewConfig {
             models,
             agents,
             repositories,
+            prompts,
             execution: ExecutionConfig::try_from(raw.execution)?,
             publisher_login: raw.publisher_login.map(|login| login.to_ascii_lowercase()),
             hash: PromptHash(format!("{:x}", hash.finalize())),
@@ -1091,11 +1214,40 @@ impl ReviewConfig {
         &self,
         key: &PrKey,
     ) -> Result<Vec<ResolvedReviewModel<'_>>, ConfigError> {
+        self.review_models_for_prompt(key, &PromptSelection::Repository)
+    }
+
+    pub fn prompt_choices(&self) -> Vec<PromptSelection> {
+        std::iter::once(PromptSelection::Repository)
+            .chain(
+                self.prompts
+                    .iter()
+                    .map(|prompt| PromptSelection::Shared(prompt.id.clone())),
+            )
+            .collect()
+    }
+
+    pub fn review_models_for_prompt(
+        &self,
+        key: &PrKey,
+        selection: &PromptSelection,
+    ) -> Result<Vec<ResolvedReviewModel<'_>>, ConfigError> {
         let repository = self
             .repositories
             .iter()
             .find(|repository| repository.name == key.repository())
             .ok_or_else(|| ConfigError::RepositoryNotConfigured(key.repository().to_owned()))?;
+        let project_prompt = match selection {
+            PromptSelection::Repository => &repository.prompt,
+            PromptSelection::Shared(id) => {
+                &self
+                    .prompts
+                    .iter()
+                    .find(|prompt| &prompt.id == id)
+                    .ok_or_else(|| ConfigError::PromptNotConfigured(id.clone()))?
+                    .text
+            }
+        };
         repository
             .review_models
             .iter()
@@ -1124,10 +1276,11 @@ impl ReviewConfig {
                             agent,
                             archive: &runner.archive,
                             execution: &self.execution,
-                            project_prompt: &repository.prompt,
+                            project_prompt,
+                            prompt_selection: selection.clone(),
                             prompt: crate::prompt_builder::build(
                                 agent.runner.kind(),
-                                &repository.prompt,
+                                project_prompt,
                             ),
                         });
                     }
@@ -1176,13 +1329,13 @@ fn resolve_host_path(directory: &Path, path: &Path) -> PathBuf {
 }
 
 fn read_prompt(
-    repository: &str,
+    owner: &str,
     prompt_file: &Path,
     config_directory: &Path,
 ) -> Result<String, ConfigError> {
     let path = resolve_host_path(config_directory, prompt_file);
     let read_error = |source| ConfigError::ReadPrompt {
-        repository: repository.to_owned(),
+        owner: owner.to_owned(),
         path: path.clone(),
         source,
     };
@@ -1190,14 +1343,14 @@ fn read_prompt(
         || !std::fs::metadata(&path).map_err(read_error)?.is_file()
     {
         return Err(ConfigError::InvalidPromptFile {
-            repository: repository.to_owned(),
+            owner: owner.to_owned(),
             path,
         });
     }
     let file = File::open(&path).map_err(read_error)?;
     if !file.metadata().map_err(read_error)?.is_file() {
         return Err(ConfigError::InvalidPromptFile {
-            repository: repository.to_owned(),
+            owner: owner.to_owned(),
             path,
         });
     }
@@ -1206,15 +1359,15 @@ fn read_prompt(
         .read_to_end(&mut bytes)
         .map_err(read_error)?;
     if bytes.len() > MAX_PROMPT_BYTES {
-        return Err(ConfigError::InvalidPrompt(repository.to_owned()));
+        return Err(ConfigError::InvalidPrompt(owner.to_owned()));
     }
     let prompt = String::from_utf8(bytes).map_err(|source| ConfigError::PromptEncoding {
-        repository: repository.to_owned(),
+        owner: owner.to_owned(),
         path,
         source,
     })?;
     if prompt.trim().is_empty() {
-        return Err(ConfigError::InvalidPrompt(repository.to_owned()));
+        return Err(ConfigError::InvalidPrompt(owner.to_owned()));
     }
     Ok(prompt)
 }
@@ -1316,6 +1469,133 @@ mod tests {
                 ]
             }]
         })
+    }
+
+    #[test]
+    fn shared_prompts_replace_repository_guidance_and_track_file_edits() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        std::fs::write(
+            directory.path().join("actions.md"),
+            "Review GitHub Actions.\n",
+        )
+        .unwrap();
+        let mut raw = config_json();
+        let mut other = raw["repositories"][0].clone();
+        other["name"] = "other/repo".into();
+        other["prompt_file"] = serde_json::json!(test_prompt_file("careful.md"));
+        raw["repositories"].as_array_mut().unwrap().push(other);
+        raw["prompts"] = serde_json::json!([{"id":"github-actions", "prompt_file":"actions.md"}]);
+        let bytes = serde_json::to_vec(&raw).unwrap();
+        let config = ReviewConfig::from_json(&bytes, &path).unwrap();
+        let shared = PromptSelection::Shared(PromptId::new("github-actions").unwrap());
+        assert_eq!(
+            config.prompt_choices(),
+            [PromptSelection::Repository, shared.clone()]
+        );
+        for repository in ["owner/repo", "other/repo"] {
+            let key = PrKey::new(repository, 42).unwrap();
+            let choices = config.review_models_for_prompt(&key, &shared).unwrap();
+            for choice in &choices {
+                assert_eq!(choice.project_prompt(), "Review GitHub Actions.\n");
+                assert_eq!(choice.prompt_selection(), &shared);
+                assert_eq!(
+                    choice.prompt().hash(),
+                    crate::prompt_builder::build(
+                        choice.agent().runner().kind(),
+                        "Review GitHub Actions.\n"
+                    )
+                    .hash()
+                );
+            }
+            let defaults = config.review_models_for(&key).unwrap();
+            assert_eq!(defaults[0].prompt_selection(), &PromptSelection::Repository);
+            assert_ne!(defaults[0].project_prompt(), choices[0].project_prompt());
+        }
+        std::fs::write(
+            directory.path().join("actions.md"),
+            "Changed shared guidance.\n",
+        )
+        .unwrap();
+        let changed = ReviewConfig::from_json(&bytes, &path).unwrap();
+        assert_ne!(changed.hash(), config.hash());
+        let key = PrKey::new("owner/repo", 42).unwrap();
+        assert_eq!(
+            config.review_models_for_prompt(&key, &shared).unwrap()[0].project_prompt(),
+            "Review GitHub Actions.\n"
+        );
+        assert_ne!(
+            config.review_models_for_prompt(&key, &shared).unwrap()[0]
+                .prompt()
+                .hash(),
+            changed.review_models_for_prompt(&key, &shared).unwrap()[0]
+                .prompt()
+                .hash()
+        );
+        assert!(matches!(
+            config.review_models_for_prompt(
+                &key,
+                &PromptSelection::Shared(PromptId::new("unknown").unwrap())
+            ),
+            Err(ConfigError::PromptNotConfigured(_))
+        ));
+    }
+
+    #[test]
+    fn shared_prompts_reject_invalid_ids_duplicates_and_invalid_files() {
+        for id in [
+            "",
+            "repository",
+            "GitHub",
+            "../actions",
+            "with spaces",
+            &"a".repeat(65),
+        ] {
+            assert!(matches!(
+                PromptId::new(id),
+                Err(ConfigError::InvalidPromptId(_))
+            ));
+            assert!(serde_json::from_value::<PromptId>(serde_json::json!(id)).is_err());
+        }
+        for id in ["repository", "github-actions"] {
+            let selection = PromptSelection::try_from(id.to_owned()).unwrap();
+            assert_eq!(serde_json::to_value(&selection).unwrap(), id);
+            assert_eq!(
+                serde_json::from_value::<PromptSelection>(serde_json::json!(id)).unwrap(),
+                selection
+            );
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("config.json");
+        let prompt_file = directory.path().join("shared.md");
+        let mut raw = config_json();
+        raw["prompts"] = serde_json::json!([{"id":"shared", "prompt_file":"shared.md"}]);
+        let load = |raw: &serde_json::Value| {
+            ReviewConfig::from_json(&serde_json::to_vec(raw).unwrap(), &path)
+        };
+        assert!(matches!(load(&raw), Err(ConfigError::ReadPrompt { .. })));
+        for invalid in [
+            vec![],
+            b"  \n".to_vec(),
+            vec![b'a'; MAX_PROMPT_BYTES + 1],
+            vec![0xff],
+        ] {
+            std::fs::write(&prompt_file, invalid).unwrap();
+            assert!(matches!(
+                load(&raw),
+                Err(ConfigError::InvalidPrompt(_) | ConfigError::PromptEncoding { .. })
+            ));
+        }
+        raw["prompts"][0]["prompt_file"] = serde_json::json!(directory.path());
+        assert!(matches!(
+            load(&raw),
+            Err(ConfigError::InvalidPromptFile { .. })
+        ));
+        raw["prompts"][0]["prompt_file"] = "shared.md".into();
+        std::fs::write(&prompt_file, "Valid shared guidance.").unwrap();
+        let duplicate = raw["prompts"][0].clone();
+        raw["prompts"].as_array_mut().unwrap().push(duplicate);
+        assert!(matches!(load(&raw), Err(ConfigError::DuplicatePrompt(_))));
     }
 
     #[test]
@@ -1604,8 +1884,8 @@ mod tests {
         let bytes = serde_json::to_vec(&raw).unwrap();
         assert!(matches!(
             ReviewConfig::from_json(&bytes, &config_path),
-            Err(ConfigError::ReadPrompt { repository, path, source })
-                if repository == "owner/repo" && path == prompt_path && source.kind() == io::ErrorKind::NotFound
+            Err(ConfigError::ReadPrompt { owner, path, source })
+                if owner == "repository owner/repo" && path == prompt_path && source.kind() == io::ErrorKind::NotFound
         ));
         raw["repositories"][0]["prompt_file"] = serde_json::json!(directory.path());
         assert!(matches!(
@@ -1616,7 +1896,7 @@ mod tests {
             std::fs::write(&prompt_path, invalid).unwrap();
             assert!(matches!(
                 ReviewConfig::from_json(&bytes, &config_path),
-                Err(ConfigError::InvalidPrompt(repository)) if repository == "owner/repo"
+                Err(ConfigError::InvalidPrompt(owner)) if owner == "repository owner/repo"
             ));
         }
         std::fs::write(&prompt_path, b"PRIVATE_PROMPT\xff").unwrap();

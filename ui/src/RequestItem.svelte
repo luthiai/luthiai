@@ -18,12 +18,13 @@
   let menuOpen = $state(false);
   let itemElement;
   let selectedModel = $state('');
+  let selectedPrompt = $state('repository');
   let reviewMode = $state('auto');
   let confirmedReviewMode = $state('auto');
   let inspected = $state(null);
   let preparation = $state(null);
   let preparationInvalid = $state(false);
-  const situation = $derived(reviewSituation(request, preparation, preparationInvalid, selectedModel));
+  const situation = $derived(reviewSituation(request, preparation, preparationInvalid, selectedModel, selectedPrompt));
   const pullUrl = $derived(`https://github.com/${request.repository}/pull/${request.number}`);
   const checksUrl = $derived(`https://github.com/${request.repository}/commit/${preparation?.head_sha ?? request.head_sha}/checks`);
 
@@ -86,7 +87,7 @@
   const primaryHelp = $derived(refreshQueued ? 'Waiting for earlier PRs to refresh.'
     : refreshLabel ? 'Fetching the latest PR inputs from GitHub.'
     : situation.action === 'run' ? `${reviewMode === 'full' ? 'Start a full PR review.'
-      : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'} ${situation.message}`
+      : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'} Prompt: ${selectedPrompt === 'repository' ? 'repository guidance' : selectedPrompt}. ${situation.message}`
     : situation.message);
   const draftRound = $derived(reviewStartupFailed(request)
     ? request.latest_round : currentReviewRound(request));
@@ -133,16 +134,18 @@
     if (result) {
       preparation = result;
       selectedModel = result.resolved_model;
+      selectedPrompt = result.prompt ?? 'repository';
       preparationInvalid = false;
     } else if (preparation) preparationInvalid = true;
   }
 
   async function validateModel(model) {
     if (!preparation || preparationInvalid || action?.pending) return;
-    const result = await onValidate(preparation, model);
+    const result = await onValidate(preparation, model, selectedPrompt);
     if (result) {
       preparation = result;
       selectedModel = result.resolved_model;
+      selectedPrompt = result.prompt ?? 'repository';
       if (result.readiness === 'ready' && result.validated_model === model) {
         confirmedReviewMode = reviewMode;
         openPanel(null);
@@ -161,7 +164,7 @@
   }
 
   async function runReview(model) {
-    if (!preparation || preparationInvalid || action?.pending) return;
+    if (!preparation || preparationInvalid || action?.pending || selectedPrompt !== (preparation.prompt ?? 'repository')) return;
     const result = await onRun(preparation, model, reviewMode);
     preparationInvalid = true;
     if (result) {
@@ -382,7 +385,7 @@
     {/if}
     {#if panel === 'preparation' && preparation}
       <PreparationPanel {request} {preparation} invalid={preparationInvalid} {action}
-        {confirmedReviewMode} bind:reviewMode bind:selectedModel onRefresh={prepareReview} onValidate={validateModel} onClose={() => openPanel(null)} />
+        {confirmedReviewMode} bind:reviewMode bind:selectedModel bind:selectedPrompt onRefresh={prepareReview} onValidate={validateModel} onClose={() => openPanel(null)} />
     {/if}
     {#if panel === 'draft' && draft}
       <DraftPanel {request} {draft} {action} onReject={onRejectDraft} onPublish={onPublishDraft}
@@ -445,6 +448,7 @@
         <dl class="detail-list">
           <div><dt>Model</dt><dd>{request.validated_model.model}</dd></div>
           <div><dt>Agent</dt><dd>{request.validated_model.agent}</dd></div>
+          <div><dt>Prompt</dt><dd>{request.validated_model.prompt === 'repository' || !request.validated_model.prompt ? 'Repository prompt' : request.validated_model.prompt}</dd></div>
         </dl>
       {:else}
         <p class="detail-empty">No validated model for current inputs</p>
@@ -460,6 +464,7 @@
           <div><dt>Input revision</dt><dd>{request.latest_round.revision}</dd></div>
           <div><dt>Model</dt><dd>{request.latest_round.model}</dd></div>
           <div><dt>Agent</dt><dd>{request.latest_round.agent}</dd></div>
+          <div><dt>Prompt</dt><dd>{request.latest_round.prompt === 'repository' || !request.latest_round.prompt ? 'Repository prompt' : request.latest_round.prompt}</dd></div>
           {#if request.latest_round.task}
             <div><dt>Scope</dt><dd>{request.latest_round.task.scope.mode === 'full' ? 'Full PR review' : `Incremental since ${request.latest_round.task.scope.since.slice(0, 7)}`}</dd></div>
           {/if}

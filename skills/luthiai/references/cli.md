@@ -80,6 +80,17 @@ Validation requires an open PR, active authorization, green exact-head checks, a
 If preparation changes the inputs or clears authorization, return to the lead with the new values.
 Neither preparation nor validation starts a review or consumes one-round authorization.
 The reviewer is resolved from configured support for the selected model; it is not a separate CLI choice.
+Preparation reports the selected prompt and all available prompt IDs.
+Add `--prompt PROMPT_ID` when confirming a model to choose shared guidance for this review:
+
+```sh
+luthiai prepare-review owner/repo 42 --model MODEL_ID --prompt github-actions --head HEAD_SHA --revision REVISION
+```
+
+Omitting `--prompt` during validation selects the repository prompt; `--prompt repository` does so explicitly.
+A shared prompt replaces repository guidance.
+Changing the prompt requires the lead's confirmation, including when keeping the same model.
+Preparation without a model choice and `run-review` use the saved prompt selection.
 
 With those decisions recorded, start the requested review and inspect its saved draft:
 
@@ -159,7 +170,7 @@ Review recovery never restores consumed one-round authorization.
 | `refresh REPOSITORY PR` | Save current head and author discussion fingerprints. |
 | `status REPOSITORY PR` / `list` | Inspect saved request and latest-round state, or list requests. |
 | `prepare-review REPOSITORY PR` | Refresh inputs, report readiness, and propose a model. |
-| `prepare-review REPOSITORY PR --model MODEL_ID --head HEAD_SHA --revision REVISION` | Record the lead's inspected model choice. |
+| `prepare-review REPOSITORY PR --model MODEL_ID --head HEAD_SHA --revision REVISION [--prompt PROMPT_ID]` | Record the lead's inspected model and prompt choice. |
 | `authorize REPOSITORY PR --scope one-round\|pr-cycle --head HEAD_SHA --revision REVISION` | Record the lead's authorization scope. |
 | `revoke REPOSITORY PR` | Withdraw authorization at the lead's request. |
 | `gateway status` | Inspect the configured gateway and providers. |

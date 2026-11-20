@@ -210,10 +210,11 @@
       (result) => result.context?.head_changed || result.context?.discussion_changed ? 'GitHub changed. Inspect the current commit and discussion before continuing.' : 'GitHub checks and review preparation updated.', 'Could not prepare the review.');
   }
 
-  function validateModel(request, requestId, preparation, model) {
+  function validateModel(request, requestId, preparation, model, prompt) {
     return performRequestAction(requestId, 'validate-model', {
       key: { repository: request.repository, number: request.number },
       model,
+      prompt,
       head_sha: preparation.head_sha,
       revision: preparation.revision,
       rules: {
@@ -230,6 +231,7 @@
       key: { repository: request.repository, number: request.number },
       model,
       review_mode: reviewMode,
+      prompt: preparation.prompt ?? 'repository',
       head_sha: preparation.head_sha,
       revision: preparation.revision,
       rules: {
@@ -392,7 +394,7 @@
             onRevoke={() => revoke(request, requestId)}
             onUnmanage={() => unmanage(request, requestId)}
             onPrepare={() => prepareReview(request, requestId)}
-            onValidate={(preparation, model) => validateModel(request, requestId, preparation, model)}
+            onValidate={(preparation, model, prompt) => validateModel(request, requestId, preparation, model, prompt)}
             onRun={(preparation, model, reviewMode) => runReview(request, requestId, preparation, model, reviewMode)}
             onViewDraft={(roundId) => viewDraft(request, requestId, roundId)}
             onRejectDraft={(inspected) => rejectDraft(requestId, inspected)}

@@ -1,7 +1,7 @@
 //! Reusable orchestration of review preparation across the CLI and future daemon.
 
 use crate::archive::{self, ArchiveError};
-use crate::config::{ConfigError, ModelId, ResolvedReviewModel, ReviewConfig};
+use crate::config::{ConfigError, ModelId, PromptSelection, ResolvedReviewModel, ReviewConfig};
 use crate::github::checks::CheckSummary;
 use crate::github::discussion::PullObservation;
 use crate::github::{GithubClient, GithubError, PullRequest};
@@ -32,6 +32,7 @@ pub enum RoundError {
 /// The lead's model choice, bound to the head and revision they inspected.
 pub struct ModelSelection {
     model: ModelId,
+    prompt: PromptSelection,
     head: HeadSha,
     revision: InputRevision,
 }
@@ -40,6 +41,7 @@ impl ModelSelection {
     pub fn new(model: ModelId, head: HeadSha, revision: InputRevision) -> Self {
         Self {
             model,
+            prompt: PromptSelection::Repository,
             head,
             revision,
         }
@@ -47,6 +49,13 @@ impl ModelSelection {
 
     pub fn model(&self) -> &ModelId {
         &self.model
+    }
+    pub fn with_prompt(mut self, prompt: PromptSelection) -> Self {
+        self.prompt = prompt;
+        self
+    }
+    pub fn prompt_selection(&self) -> &PromptSelection {
+        &self.prompt
     }
     pub fn head(&self) -> &HeadSha {
         &self.head
@@ -60,7 +69,7 @@ impl ModelSelection {
 #[must_use = "persist refreshed state before gathering more evidence"]
 pub struct RefreshedRound<'a> {
     observation: PullObservation,
-    models: Vec<ResolvedReviewModel<'a>>,
+    config: &'a ReviewConfig,
     outcome: RefreshOutcome,
 }
 
@@ -123,7 +132,7 @@ pub fn refresh_observation<'a>(
     observation: PullObservation,
 ) -> Result<RefreshedRound<'a>, RoundError> {
     let key = observation.key();
-    let models = config.review_models_for(key)?;
+    config.review_models_for(key)?;
     if state.get(key).is_none() {
         return Err(StateError::RequestNotFound(key.clone()).into());
     }
@@ -134,7 +143,7 @@ pub fn refresh_observation<'a>(
     )?;
     Ok(RefreshedRound {
         observation,
-        models,
+        config,
         outcome,
     })
 }
@@ -148,7 +157,7 @@ pub fn prepare<'a>(
 ) -> Result<RoundPreparation<'a>, RoundError> {
     let RefreshedRound {
         observation,
-        mut models,
+        config,
         ..
     } = refreshed;
     let key = observation.key().clone();
@@ -163,6 +172,15 @@ pub fn prepare<'a>(
     if let Some(choice) = selection {
         request.ensure_inspected(&choice.head, choice.revision)?;
     }
+    let saved_prompt = request
+        .model_validation()
+        .map(|validation| validation.prompt_selection());
+    let prompt = selection
+        .map(ModelSelection::prompt_selection)
+        .or_else(|| saved_prompt.filter(|prompt| config.prompt_choices().contains(prompt)))
+        .cloned()
+        .unwrap_or_default();
+    let mut models = config.review_models_for_prompt(&key, &prompt)?;
 
     let inputs = client.preparation_inputs(observation)?;
     let request = state

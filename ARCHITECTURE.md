@@ -382,6 +382,9 @@ to inspect, not instructions for the reviewer to follow.
 The system prompt and adapter-specific prompts are embedded Markdown source assets.
 Only project guidance comes from repository configuration, through a trusted local `prompt_file`.
 Configuration schema 7 removes reviewer prompt files and requires a project prompt per repository.
+An optional top-level `prompts` list supplies named shared guidance files available to every repository.
+The lead selects `repository` or a shared prompt ID independently of model and full or incremental scope.
+A shared prompt replaces repository guidance; built-in system and reviewer rules still apply.
 Relative paths resolve against the configuration directory;
 contents are loaded once, preserved exactly, and limited to 64 KiB.
 
@@ -400,6 +403,13 @@ The existing `format_sha256` also covers compiled system and reviewer guidance,
 both task templates and their context rendering, and the canonical output schema.
 The configuration fingerprint includes loaded project contents and those compiled rules.
 Preparation and final dispatch rechecks use the same fingerprints.
+Model validation and round records retain the prompt selection as well as its content fingerprint.
+Selections must match even when two prompt files have identical contents.
+Preparation reuses the saved selection; an unavailable saved prompt falls back to repository guidance
+and requires fresh validation.
+Round startup reuses the validated prompt and resolves that same selection for its final configuration recheck.
+All configured prompt files participate in the configuration fingerprint;
+API snapshots expose identifiers without file contents.
 
 A typed task records the inspected base and effective full or incremental scope.
 Automatic scope selects only the latest confirmed publication for that PR from local history.

@@ -4,6 +4,7 @@ export function preparationOutdated(request, preparation, invalid = false) {
   return invalid || preparation.head_sha !== request.head_sha || preparation.revision !== request.revision ||
     preparation.authorization !== request.authorization || Boolean(preparation.validated_model && validation &&
       (preparation.validated_model !== validation.model ||
+        (preparation.prompt ?? 'repository') !== (validation.prompt ?? 'repository') ||
         preparation.models.find((choice) => choice.model === preparation.validated_model)?.agent !== validation.agent));
 }
 
@@ -130,7 +131,8 @@ export function reviewFailure(request) {
   return { title: savedDraft ? 'Draft saved with warning' : 'Review failed', messages };
 }
 
-export function reviewSituation(request, preparation, invalid = false, selectedModel = preparation?.resolved_model) {
+export function reviewSituation(request, preparation, invalid = false, selectedModel = preparation?.resolved_model,
+  selectedPrompt = preparation?.prompt ?? 'repository') {
   const round = request.latest_round;
   const failure = reviewFailure(request);
   const result = (stage, title, message, action, label, tone = 'neutral', secondaryAction = null) => ({ stage, title, message, action, label, tone, secondaryAction });
@@ -160,6 +162,7 @@ export function reviewSituation(request, preparation, invalid = false, selectedM
     if (preparation.readiness === 'awaiting_authorization') return result('permission', 'Needs permission', 'The preparation refreshed GitHub inputs. Inspect them and allow the review again.', 'authorize', 'Allow review', 'attention');
     if (preparation.readiness === 'discussion_not_observed') return result('refresh', 'Needs refresh', 'Refresh from GitHub before continuing.', 'refresh', 'Refresh PR');
     if (preparation.readiness === 'ready' && !request.validated_model) return result('preparation', 'Model unconfirmed', 'Local updates will confirm the saved choice. Check readiness again if the choice was cleared.', 'prepare', 'Check review readiness');
+    if (selectedPrompt !== (preparation.prompt ?? 'repository')) return result('preparation', 'Options unconfirmed', 'Confirm the selected review prompt before starting the review.', 'model', 'Review options', 'attention');
     if (preparation.readiness === 'ready' && preparation.validated_model === selectedModel && request.validated_model?.model === preparation.validated_model && request.validated_model?.agent === preparation.models.find((choice) => choice.model === selectedModel)?.agent) return result('review', 'Ready', 'Starting rechecks GitHub, permission, and the review environment.', 'run', 'Start review', 'success');
     return result('preparation', 'Needs model', 'Choose and confirm a model for the inspected inputs.', 'model', 'Review options', 'attention');
   }

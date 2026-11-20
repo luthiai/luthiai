@@ -272,6 +272,37 @@ Prompt edits change the configuration fingerprint and invalidate a matching mode
 prepare and inspect the review again and obtain the lead's model validation for the updated instructions.
 Prompt contents are not printed by `prepare-review`.
 
+### Shared review prompts
+
+Add an optional top-level `prompts` list to offer reusable guidance independently of repositories:
+
+```json
+"prompts": [
+  {"id": "github-actions", "prompt_file": "prompts/shared/github-actions.md"},
+  {"id": "security", "prompt_file": "prompts/shared/security.md"}
+]
+```
+
+Each ID must be unique and use 1–64 lowercase ASCII letters, digits, hyphens, or underscores,
+starting with a letter.
+`repository` is reserved for the repository's own prompt.
+Shared files follow the same path resolution, UTF-8, regular-file, and size requirements as repository prompts.
+Every shared file is loaded and fingerprinted with the configuration.
+
+The lead can select one shared prompt in GUI review options or confirm it through the CLI:
+
+```sh
+luthiai prepare-review owner/repo 42 --model MODEL_ID --prompt github-actions --head HEAD_SHA --revision REVISION
+```
+
+This replaces the repository guidance for the review; it does not append a second prompt.
+The built-in system rules, reviewer guidance, and generated scope task remain in effect.
+`prepare-review` lists available prompt IDs and the currently resolved prompt without printing their contents.
+Validation without `--prompt`, or with `--prompt repository`, selects repository guidance.
+Preparation without a model choice and `run-review` reuse the saved validated selection.
+Changing the selected prompt requires confirmation even if its contents match the previous prompt.
+If a saved shared prompt is removed, preparation returns to repository guidance and requires fresh validation.
+
 ### What the binary adds
 
 | Part | Source and responsibility |
@@ -298,7 +329,7 @@ Use `luthiai state-path` with the same global overrides to locate the state dire
 and `status` to find the round ID.
 Under `rounds/ROUND_ID/instructions/` in that directory:
 
-- `project-prompt.txt` is the project guidance used for that round.
+- `project-prompt.txt` is the selected repository or shared guidance used for that round.
 - `system-prompt.txt` contains the composed project guidance, reviewer guidance, and system rules.
 - `task-prompt.txt` contains the generated full or incremental task with its exact PR and commit context.
 - `review-output.schema.json` is the required output schema.
