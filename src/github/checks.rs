@@ -1,6 +1,7 @@
 //! Exact-head GitHub check runs and commit statuses for operator display.
 
 use super::{GithubClient, GithubError, GithubResult, PullRequest};
+use crate::config::CiCheckName;
 use crate::preparation::{CiObservation, CiState};
 use crate::{HeadSha, PrKey};
 use serde::{Deserialize, Serialize};
@@ -23,8 +24,8 @@ impl CheckReport {
         &self.head_sha
     }
 
-    pub fn preparation_observation(&self) -> CiObservation<'_> {
-        let state = match self.summary() {
+    pub fn preparation_observation(&self, ignored: &[CiCheckName]) -> CiObservation<'_> {
+        let state = match self.summary_excluding(ignored) {
             CheckSummary::Green => CiState::Green,
             CheckSummary::Pending => CiState::Pending,
             CheckSummary::Failing => CiState::Failing,
@@ -43,15 +44,35 @@ impl CheckReport {
     }
 
     pub fn summary(&self) -> CheckSummary {
+        self.summary_excluding(&[])
+    }
+
+    /// Assess only checks whose exact names are not excluded by trusted configuration.
+    pub fn summary_excluding(&self, ignored: &[CiCheckName]) -> CheckSummary {
+        let is_ignored = |name: &str| ignored.iter().any(|check| check.as_str() == name);
+        // GitHub's rollup includes ignored statuses. In that case, derive the
+        // result from the remaining individual statuses instead.
+        let combined_state = self.combined_state.filter(|_| {
+            !self
+                .commit_statuses
+                .iter()
+                .any(|status| is_ignored(&status.context))
+        });
         let mut any = false;
         let mut pending = false;
         let mut unknown = false;
         for signal in self
             .check_runs
             .iter()
+            .filter(|run| !is_ignored(&run.name))
             .map(CheckRun::signal)
-            .chain(self.commit_statuses.iter().map(CommitStatus::signal))
-            .chain(self.combined_state.map(CommitState::signal))
+            .chain(
+                self.commit_statuses
+                    .iter()
+                    .filter(|status| !is_ignored(&status.context))
+                    .map(CommitStatus::signal),
+            )
+            .chain(combined_state.map(CommitState::signal))
         {
             any = true;
             match signal {
@@ -501,5 +522,112 @@ mod tests {
             combined_state: None,
         };
         assert_eq!(report.summary(), CheckSummary::Green);
+    }
+
+    #[test]
+    fn ignored_check_runs_do_not_block_passing_checks() {
+        let ignored = [CiCheckName::new("Optional Check").unwrap()];
+        for (status, conclusion) in [
+            ("in_progress", None),
+            ("completed", Some("failure")),
+            ("completed", None),
+        ] {
+            let mut optional_check = run(status, conclusion);
+            optional_check.name = "Optional Check".to_owned();
+            let report = report(vec![run("completed", Some("success")), optional_check], &[]);
+            assert_ne!(report.summary(), CheckSummary::Green);
+            assert_eq!(report.summary_excluding(&ignored), CheckSummary::Green);
+            // Filtering for readiness must preserve the reported results for inspection.
+            assert_eq!(report.check_runs().len(), 2);
+        }
+    }
+
+    #[test]
+    fn ignored_status_contexts_do_not_block_through_the_combined_rollup() {
+        let ignored = [CiCheckName::new("Optional Check").unwrap()];
+        for state in [
+            CommitState::Failure,
+            CommitState::Error,
+            CommitState::Pending,
+            CommitState::Unknown,
+        ] {
+            let mut report = report(vec![], &["success"]);
+            report.commit_statuses.push(CommitStatus {
+                context: "Optional Check".to_owned(),
+                state,
+            });
+            report.combined_state = Some(state);
+            assert_ne!(report.summary(), CheckSummary::Green);
+            assert_eq!(report.summary_excluding(&ignored), CheckSummary::Green);
+            assert_eq!(report.commit_statuses().len(), 2);
+        }
+    }
+
+    #[test]
+    fn exclusions_match_exact_names_and_keep_other_checks_blocking() {
+        let ignored = [CiCheckName::new("Optional Check").unwrap()];
+        for name in [
+            "optional check",
+            "Optional Check ",
+            "Optional Check / other",
+        ] {
+            let mut report = report(vec![run("in_progress", None)], &[]);
+            report.check_runs[0].name = name.to_owned();
+            assert_eq!(report.summary_excluding(&ignored), CheckSummary::Pending);
+            report.check_runs.clear();
+            report.commit_statuses.push(CommitStatus {
+                context: name.to_owned(),
+                state: CommitState::Pending,
+            });
+            assert_eq!(report.summary_excluding(&ignored), CheckSummary::Pending);
+        }
+
+        for (status, conclusion, expected) in [
+            ("queued", None, CheckSummary::Pending),
+            ("completed", Some("failure"), CheckSummary::Failing),
+            ("completed", None, CheckSummary::Unknown),
+        ] {
+            let mut optional_check = run("in_progress", None);
+            optional_check.name = "Optional Check".to_owned();
+            let report = report(vec![optional_check, run(status, conclusion)], &[]);
+            assert_eq!(report.summary_excluding(&ignored), expected);
+        }
+        for (state, expected) in [
+            ("pending", CheckSummary::Pending),
+            ("failure", CheckSummary::Failing),
+            ("unexpected", CheckSummary::Unknown),
+        ] {
+            let mut report = report(vec![], &[state]);
+            report.commit_statuses.push(CommitStatus {
+                context: "Optional Check".to_owned(),
+                state: CommitState::Pending,
+            });
+            report.combined_state = Some(CommitState::Pending);
+            assert_eq!(report.summary_excluding(&ignored), expected);
+        }
+    }
+
+    #[test]
+    fn ignoring_every_result_does_not_make_an_empty_result_set_green() {
+        let ignored = [
+            CiCheckName::new("job").unwrap(),
+            CiCheckName::new("ci").unwrap(),
+        ];
+        let mut report = report(vec![run("completed", Some("success"))], &["success"]);
+        report.combined_state = Some(CommitState::Success);
+        assert_eq!(report.summary_excluding(&ignored), CheckSummary::NoResults);
+        report.check_runs.clear();
+        assert_eq!(report.summary_excluding(&ignored), CheckSummary::NoResults);
+        report.commit_statuses.clear();
+        report.combined_state = None;
+        assert_eq!(report.summary_excluding(&ignored), CheckSummary::NoResults);
+    }
+
+    #[test]
+    fn unmatched_exclusions_preserve_the_legacy_rollup() {
+        let ignored = [CiCheckName::new("Optional Check").unwrap()];
+        let mut report = report(vec![], &["success"]);
+        report.combined_state = Some(CommitState::Failure);
+        assert_eq!(report.summary_excluding(&ignored), CheckSummary::Failing);
     }
 }

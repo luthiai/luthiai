@@ -122,7 +122,7 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Select full or incremental scope in the workflow code using confirmed publication receipts.
   Verify the previous reviewed commit's ancestry and fall back to full on divergent or missing history.
   PR text and review markers never select the scope or baseline.
-- A round requires green checks for the exact PR head being reviewed.
+- A round requires green checks for the exact PR head being reviewed after repository-configured exact-name exclusions.
   Bind each draft to that head and the author comments seen; mark it stale on change.
 - Combine check runs and commit statuses for the exact PR head when assessing CI.
   An empty result set is not green.
@@ -211,6 +211,8 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Add `Signed-off-by` with the configured Git identity and a `Co-authored-by` trailer naming the contributing agent and its actual model.
   Preserve existing trailers when amending; do not duplicate them.
 - For documentation, use semantic line breaks.
+- Use generic examples in documentation and tests.
+  Treat user-provided real-world examples as context unless their inclusion is requested.
 - For GitHub Actions in workflows, pin each `uses:` action to a full commit SHA.
   Use the latest stable release and annotate the pin with its version.
 - Use the newest available explicit OS version labels for GitHub-hosted runners; avoid `*-latest`.

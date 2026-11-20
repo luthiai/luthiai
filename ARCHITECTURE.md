@@ -39,7 +39,8 @@ Requests are recorded, GitHub inputs refreshed, and each review started explicit
 Each requested PR has one authorization state.
 Authorization controls whether a new review round may start;
 it does not describe whether CI is pending, a reviewer is running, or a draft awaits the lead's decision.
-Every round also requires green CI checks for the current PR head and lead validation of the model.
+Every round also requires green CI checks for the current PR head after configured exclusions,
+and lead validation of the model.
 
 The state file stores the three values as `awaiting_lead`, `one_round`, and `pr_cycle`.
 Entering either authorized state requires the head SHA and input revision the lead inspected
@@ -311,7 +312,14 @@ Publication and rejection use local state and GitHub without contacting OpenShel
 The reviewer may read PR files and GitHub context, but does not execute repository
 code, install dependencies, or run tools against the code under review.
 Builds, tests, linters, and other validation steps run in CI.
-LuthiAI starts a review only after the current PR commit's CI checks are green.
+LuthiAI starts a review only after the current PR commit's CI checks are green after configured exclusions.
+Each repository's optional `ignored_ci_checks` list matches check-run names and legacy status contexts exactly,
+including case, during preparation and every round-start recheck.
+The list is trusted local configuration and participates in the configuration fingerprint.
+When legacy statuses are excluded, readiness uses the remaining individual statuses
+instead of GitHub's combined status, which still includes excluded results.
+An empty remaining result set is not green.
+`github-pr --checks` continues to show all reported results without applying configuration.
 PR metadata, commit comparisons, and individual check pages are limited to 8 MiB of response data
 before JSON decoding, with typed errors for oversized responses.
 

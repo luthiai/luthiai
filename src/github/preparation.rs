@@ -5,7 +5,7 @@ use super::commits::CommitCoauthors;
 use super::discussion::PullObservation as DiscussionObservation;
 use super::{GithubClient, GithubError, GithubResult, PullRequest};
 use crate::HeadSha;
-use crate::config::CoauthorIdentity;
+use crate::config::{CiCheckName, CoauthorIdentity};
 use crate::preparation::{CiObservation, PullObservation};
 use std::collections::HashSet;
 
@@ -29,16 +29,16 @@ impl PreparationInputs {
         self.pull.preparation_observation()
     }
 
-    pub fn ci_observation(&self) -> CiObservation<'_> {
-        self.checks.preparation_observation()
+    pub fn ci_observation(&self, ignored: &[CiCheckName]) -> CiObservation<'_> {
+        self.checks.preparation_observation(ignored)
     }
 
     pub fn coauthors(&self) -> &HashSet<CoauthorIdentity> {
         self.coauthors.identities()
     }
 
-    pub fn checks_summary(&self) -> CheckSummary {
-        self.checks.summary()
+    pub fn checks_summary(&self, ignored: &[CiCheckName]) -> CheckSummary {
+        self.checks.summary_excluding(ignored)
     }
 }
 

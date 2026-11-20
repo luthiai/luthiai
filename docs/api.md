@@ -107,6 +107,9 @@ It returns the prepared `head_sha`, `revision`, `authorization`,
 the resolved `prompt`, and available `prompts` (an ordered list of IDs beginning with `repository`).
 Preparation reuses the saved validated prompt when it is still configured;
 otherwise it selects `repository`.
+Preparation's `checks` and `readiness` exclude the repository's configured `ignored_ci_checks`,
+matching check-run names and legacy status contexts exactly.
+No remaining results means `no_results` checks and `no_checks` readiness when the other gates permit it.
 
 Validation accepts `key` with `repository` and `number`, the selected `model`,
 the inspected `head_sha` and `revision`,

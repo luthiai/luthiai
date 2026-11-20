@@ -92,6 +92,13 @@ pub enum ConfigError {
     InvalidRepository(#[source] StateError),
     #[error("duplicate configured repository {0}")]
     DuplicateRepository(String),
+    #[error("CI check name must be nonblank and contain no control characters: {0:?}")]
+    InvalidCiCheckName(String),
+    #[error("repository {repository} ignores CI check {name:?} more than once")]
+    DuplicateIgnoredCiCheck {
+        repository: String,
+        name: CiCheckName,
+    },
     #[error("repository {0} has no review models")]
     NoReviewModels(String),
     #[error("repository {0} has no agent runners")]
@@ -878,12 +885,40 @@ impl Agent {
     }
 }
 
+/// Exact, case-sensitive GitHub check-run name or legacy status context.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(try_from = "String")]
+pub struct CiCheckName(String);
+
+impl CiCheckName {
+    pub fn new(value: impl Into<String>) -> Result<Self, ConfigError> {
+        let value = value.into();
+        if value.trim().is_empty() || value.chars().any(char::is_control) {
+            return Err(ConfigError::InvalidCiCheckName(value));
+        }
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for CiCheckName {
+    type Error = ConfigError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 #[derive(Debug)]
 pub struct RepositoryConfig {
     name: String,
     prompt: String,
     review_models: Vec<ModelId>,
     runners: Vec<Runner>,
+    ignored_ci_checks: Vec<CiCheckName>,
 }
 
 #[derive(Debug)]
@@ -984,6 +1019,8 @@ struct RawRepository {
     prompt_file: PathBuf,
     review_models: Vec<String>,
     runners: Vec<RawRunner>,
+    #[serde(default)]
+    ignored_ci_checks: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -1122,6 +1159,18 @@ impl ReviewConfig {
             if !seen_repositories.insert(name.clone()) {
                 return Err(ConfigError::DuplicateRepository(name));
             }
+            let mut ignored_ci_checks = Vec::new();
+            let mut seen_ignored_ci_checks = HashSet::new();
+            for raw_name in raw_repository.ignored_ci_checks {
+                let check_name = CiCheckName::new(raw_name)?;
+                if !seen_ignored_ci_checks.insert(check_name.clone()) {
+                    return Err(ConfigError::DuplicateIgnoredCiCheck {
+                        repository: name,
+                        name: check_name,
+                    });
+                }
+                ignored_ci_checks.push(check_name);
+            }
             let prompt = read_prompt(
                 &format!("repository {name}"),
                 &raw_repository.prompt_file,
@@ -1176,6 +1225,7 @@ impl ReviewConfig {
                 prompt,
                 review_models,
                 runners,
+                ignored_ci_checks,
             });
         }
         let config = Self {
@@ -1217,6 +1267,17 @@ impl ReviewConfig {
         self.review_models_for_prompt(key, &PromptSelection::Repository)
     }
 
+    pub fn ignored_ci_checks_for(&self, key: &PrKey) -> Result<&[CiCheckName], ConfigError> {
+        Ok(&self.repository_for(key)?.ignored_ci_checks)
+    }
+
+    fn repository_for(&self, key: &PrKey) -> Result<&RepositoryConfig, ConfigError> {
+        self.repositories
+            .iter()
+            .find(|repository| repository.name == key.repository())
+            .ok_or_else(|| ConfigError::RepositoryNotConfigured(key.repository().to_owned()))
+    }
+
     pub fn prompt_choices(&self) -> Vec<PromptSelection> {
         std::iter::once(PromptSelection::Repository)
             .chain(
@@ -1232,11 +1293,7 @@ impl ReviewConfig {
         key: &PrKey,
         selection: &PromptSelection,
     ) -> Result<Vec<ResolvedReviewModel<'_>>, ConfigError> {
-        let repository = self
-            .repositories
-            .iter()
-            .find(|repository| repository.name == key.repository())
-            .ok_or_else(|| ConfigError::RepositoryNotConfigured(key.repository().to_owned()))?;
+        let repository = self.repository_for(key)?;
         let project_prompt = match selection {
             PromptSelection::Repository => &repository.prompt,
             PromptSelection::Shared(id) => {
@@ -1469,6 +1526,79 @@ mod tests {
                 ]
             }]
         })
+    }
+
+    #[test]
+    fn ignored_ci_checks_default_to_empty_and_are_scoped_to_the_repository() {
+        let key = PrKey::new("owner/repo", 42).unwrap();
+        let mut raw = config_json();
+        let original =
+            ReviewConfig::from_json(&serde_json::to_vec(&raw).unwrap(), Path::new("config.json"))
+                .unwrap();
+        assert!(original.ignored_ci_checks_for(&key).unwrap().is_empty());
+
+        let mut second = raw["repositories"][0].clone();
+        second["name"] = "owner/other".into();
+        raw["repositories"].as_array_mut().unwrap().push(second);
+        let without_ignored =
+            ReviewConfig::from_json(&serde_json::to_vec(&raw).unwrap(), Path::new("config.json"))
+                .unwrap();
+        raw["repositories"][0]["ignored_ci_checks"] =
+            serde_json::json!(["Optional Check", "legacy-ci"]);
+        let configured =
+            ReviewConfig::from_json(&serde_json::to_vec(&raw).unwrap(), Path::new("config.json"))
+                .unwrap();
+        assert_eq!(
+            configured
+                .ignored_ci_checks_for(&key)
+                .unwrap()
+                .iter()
+                .map(CiCheckName::as_str)
+                .collect::<Vec<_>>(),
+            ["Optional Check", "legacy-ci"]
+        );
+        assert!(
+            configured
+                .ignored_ci_checks_for(&PrKey::new("owner/other", 42).unwrap())
+                .unwrap()
+                .is_empty()
+        );
+        assert_ne!(without_ignored.hash(), configured.hash());
+        assert!(matches!(
+            configured.ignored_ci_checks_for(&PrKey::new("owner/unknown", 42).unwrap()),
+            Err(ConfigError::RepositoryNotConfigured(_))
+        ));
+    }
+
+    #[test]
+    fn ignored_ci_checks_reject_invalid_and_duplicate_names() {
+        for name in ["", "  ", "Check\nName", "Check\0Name", "Check\tName"] {
+            assert!(matches!(
+                CiCheckName::new(name),
+                Err(ConfigError::InvalidCiCheckName(_))
+            ));
+            assert!(serde_json::from_value::<CiCheckName>(serde_json::json!(name)).is_err());
+            let mut raw = config_json();
+            raw["repositories"][0]["ignored_ci_checks"] = serde_json::json!([name]);
+            assert!(matches!(
+                ReviewConfig::from_json(
+                    &serde_json::to_vec(&raw).unwrap(),
+                    Path::new("config.json")
+                ),
+                Err(ConfigError::InvalidCiCheckName(_))
+            ));
+        }
+        let name: CiCheckName = serde_json::from_str("\"Optional Check\"").unwrap();
+        assert_eq!(name.as_str(), "Optional Check");
+
+        let mut raw = config_json();
+        raw["repositories"][0]["ignored_ci_checks"] =
+            serde_json::json!(["Optional Check", "Optional Check"]);
+        assert!(matches!(
+            ReviewConfig::from_json(&serde_json::to_vec(&raw).unwrap(), Path::new("config.json")),
+            Err(ConfigError::DuplicateIgnoredCiCheck { repository, name })
+                if repository == "owner/repo" && name.as_str() == "Optional Check"
+        ));
     }
 
     #[test]

@@ -155,6 +155,31 @@ replace the model, gateway, file paths, publishing account, and checksums with t
 }
 ```
 
+## CI check exclusions
+
+Each repository can optionally set `ignored_ci_checks` to a list of GitHub check names.
+For example, add this field to a repository's entry in `repositories`:
+
+```json
+"ignored_ci_checks": ["optional-check"]
+```
+
+This allows a review to proceed while the listed checks are pending or failing,
+provided the remaining checks pass and the other review requirements are met.
+The setting applies to every PR in that repository in both CLI and GUI preparation and review startup.
+Omitting it or using an empty list checks every reported result.
+
+Names match check-run `name` values and legacy commit-status `context` values exactly, including case and spaces.
+Use `luthiai github-pr owner/repo 42 --checks` to inspect those names;
+this command always shows all reported results without applying exclusions.
+Names must be nonblank and contain no control characters; duplicate entries are rejected.
+Patterns and partial matches are not supported.
+
+Unlisted pending, failing, or unknown results still block reviews.
+If no results remain after exclusions, preparation reports no checks and stays blocked.
+Changes to this list change the configuration fingerprint;
+prepare again before confirming a GUI decision made against the previous configuration.
+
 ## Additional models and reviewers
 
 A single reviewer and model are sufficient to run a review.

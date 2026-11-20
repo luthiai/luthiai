@@ -1724,7 +1724,7 @@ mod tests {
         let inputs = client.preparation_inputs(observed).unwrap();
         handle.join().unwrap();
         assert_eq!(inputs.head_sha().as_str(), HEAD);
-        assert_eq!(inputs.checks_summary(), CheckSummary::Green);
+        assert_eq!(inputs.checks_summary(&[]), CheckSummary::Green);
         assert!(inputs.coauthors().contains(
             &crate::config::CoauthorIdentity::new("Claude", "claude@example.com").unwrap()
         ));
@@ -1755,7 +1755,7 @@ mod tests {
         );
         let inputs = client.preparation_inputs(observed).unwrap();
         handle.join().unwrap();
-        assert_eq!(inputs.checks_summary(), CheckSummary::Green);
+        assert_eq!(inputs.checks_summary(&[]), CheckSummary::Green);
     }
 
     #[test]
@@ -1844,6 +1844,8 @@ mod tests {
         enum Case {
             SelectedValid,
             SelectedShared,
+            SelectedIgnoredChecks,
+            SelectedUnignoredChecks,
             SelectedInvalidArchive,
             ProposedValid,
             ProposedInvalidArchive,
@@ -1869,6 +1871,8 @@ mod tests {
         for case in [
             Case::SelectedValid,
             Case::SelectedShared,
+            Case::SelectedIgnoredChecks,
+            Case::SelectedUnignoredChecks,
             Case::SelectedInvalidArchive,
             Case::ProposedValid,
             Case::ProposedInvalidArchive,
@@ -1876,12 +1880,18 @@ mod tests {
         ] {
             let valid_checksum = matches!(
                 case,
-                Case::SelectedValid | Case::SelectedShared | Case::ProposedValid
+                Case::SelectedValid
+                    | Case::SelectedShared
+                    | Case::SelectedIgnoredChecks
+                    | Case::SelectedUnignoredChecks
+                    | Case::ProposedValid
             );
             let select_model = matches!(
                 case,
                 Case::SelectedValid
                     | Case::SelectedShared
+                    | Case::SelectedIgnoredChecks
+                    | Case::SelectedUnignoredChecks
                     | Case::SelectedInvalidArchive
                     | Case::SelectedBlocked
             );
@@ -1899,6 +1909,11 @@ mod tests {
                     "agents": [{"id": "claude", "models": ["model-alpha"], "runner":crate::config::test_runner_json()}],
                     "repositories": [{
                         "name": "owner/repo", "prompt_file": crate::config::test_prompt_file("review.md"),
+                        "ignored_ci_checks": if matches!(case, Case::SelectedIgnoredChecks) {
+                            vec!["Optional Check"]
+                        } else {
+                            vec![]
+                        },
                         "review_models": ["model-alpha"],
                         "runners": [{
                             "agent": "claude",
@@ -1926,7 +1941,22 @@ mod tests {
             }
 
             let mut replies = observation_replies(&[], &[], &[]);
-            replies.extend(preparation_replies(&[], &[]));
+            let mut preparation = preparation_replies(&[], &[]);
+            let mut runs = successful_check_runs(1, 1);
+            if matches!(
+                case,
+                Case::SelectedIgnoredChecks | Case::SelectedUnignoredChecks
+            ) {
+                runs.push(serde_json::json!({
+                    "id": 2,
+                    "name": "Optional Check",
+                    "head_sha": HEAD,
+                    "status": "in_progress",
+                    "conclusion": null
+                }));
+                preparation[1] = check_runs_reply(1, 2, runs.clone());
+            }
+            replies.extend(preparation);
             replies.push(json_reply(pull_route(&key), pr_body(HEAD, BASE)));
             let (url, handle) = serve_many(replies);
             let client = GithubClient::for_api(url, Some("test-token".to_owned()));
@@ -1950,8 +1980,12 @@ mod tests {
             );
             handle.join().unwrap();
             match case {
-                Case::SelectedValid | Case::SelectedShared | Case::ProposedValid => {
+                Case::SelectedValid
+                | Case::SelectedShared
+                | Case::SelectedIgnoredChecks
+                | Case::ProposedValid => {
                     let prepared = result.unwrap();
+                    assert_eq!(prepared.checks(), CheckSummary::Green);
                     assert_eq!(prepared.validation_changed(), select_model);
                     assert_eq!(
                         prepared.preparation().readiness(),
@@ -1966,16 +2000,20 @@ mod tests {
                         state.get(&key).unwrap().model_validation().is_some(),
                         select_model
                     );
-                    if matches!(case, Case::SelectedShared) {
-                        assert_eq!(
-                            prepared.resolved().project_prompt(),
-                            include_str!("../tests/fixtures/prompts/careful.md")
-                        );
-                        // Startup has no explicit model selection and must reuse the saved prompt.
+                    if matches!(case, Case::SelectedShared | Case::SelectedIgnoredChecks) {
+                        if matches!(case, Case::SelectedShared) {
+                            assert_eq!(
+                                prepared.resolved().project_prompt(),
+                                include_str!("../tests/fixtures/prompts/careful.md")
+                            );
+                        }
+                        // Startup reuses the saved prompt and the repository's CI exclusions.
                         let mut state: State =
                             serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
                         let mut replies = observation_replies(&[], &[], &[]);
-                        replies.extend(preparation_replies(&[], &[]));
+                        let mut preparation = preparation_replies(&[], &[]);
+                        preparation[1] = check_runs_reply(1, runs.len() as u64, runs.clone());
+                        replies.extend(preparation);
                         replies.push(json_reply(pull_route(&key), pr_body(HEAD, BASE)));
                         let (url, handle) = serve_many(replies);
                         let client = GithubClient::for_api(url, Some("test-token".to_owned()));
@@ -1983,6 +2021,7 @@ mod tests {
                         let started = round::prepare(&client, &mut state, refreshed, None).unwrap();
                         handle.join().unwrap();
                         assert_eq!(started.preparation().readiness(), Readiness::Ready);
+                        assert_eq!(started.checks(), CheckSummary::Green);
                         assert_eq!(
                             started.resolved().prompt_selection(),
                             choice.prompt_selection()
@@ -2005,6 +2044,15 @@ mod tests {
                         result.err().unwrap(),
                         RoundError::Validation(ModelValidationError::Blocked(
                             Readiness::AwaitingAuthorization
+                        ))
+                    ));
+                    assert!(state.get(&key).unwrap().model_validation().is_none());
+                }
+                Case::SelectedUnignoredChecks => {
+                    assert!(matches!(
+                        result.err().unwrap(),
+                        RoundError::Validation(ModelValidationError::Blocked(
+                            Readiness::ChecksPending
                         ))
                     ));
                     assert!(state.get(&key).unwrap().model_validation().is_none());
