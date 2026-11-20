@@ -27,6 +27,8 @@ add a dependency or abstraction when a current feature needs it.
   Callers should distinguish failures by variant without parsing error messages.
   Keep HTTP client types out of public errors so replacing the client does not break callers.
   Preserve underlying sources and useful context.
+  When callers render the full error chain, keep wrapper messages to their own context
+  so each source message appears once.
   Use `anyhow` at a CLI entry point when the caller has no recovery decision to make.
   Test error decisions by variant; check message text only when it is user-facing behavior.
   Reserve `panic!`, `unwrap`, and `expect` for tests or invariants that are proven locally.

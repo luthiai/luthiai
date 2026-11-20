@@ -15,7 +15,7 @@ use thiserror::Error;
 pub enum RecordError {
     #[error(transparent)]
     State(#[from] StateError),
-    #[error("resolving the current PR head for {key}: {source}")]
+    #[error("resolving the current PR head for {key}")]
     Github {
         key: PrKey,
         #[source]

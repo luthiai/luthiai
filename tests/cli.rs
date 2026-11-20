@@ -104,9 +104,13 @@ fn request_lookup_errors_are_actionable_and_preserve_saved_state() {
             .unwrap();
         assert!(!output.status.success());
         let stderr = String::from_utf8(output.stderr).unwrap();
-        assert!(stderr.contains("owner/repo#42"), "{stderr}");
-        assert!(stderr.contains("LUTHIAI_GITHUB_TOKEN_RO"), "{stderr}");
-        assert!(stderr.contains("invalid header characters"), "{stderr}");
+        assert_eq!(
+            stderr,
+            concat!(
+                "error: resolving the current PR head for owner/repo#42: ",
+                "LUTHIAI_GITHUB_TOKEN_RO contains invalid header characters\n"
+            )
+        );
         assert!(!stderr.contains(secret));
         assert!(output.stdout.is_empty());
         assert_eq!(std::fs::read(&state_file).ok(), before);
