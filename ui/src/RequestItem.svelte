@@ -87,7 +87,7 @@
   const primaryHelp = $derived(refreshQueued ? 'Waiting for earlier PRs to refresh.'
     : refreshLabel ? 'Fetching the latest PR inputs from GitHub.'
     : situation.action === 'run' ? `${reviewMode === 'full' ? 'Start a full PR review.'
-      : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'} Prompt: ${selectedPrompt === 'repository' ? 'repository guidance' : selectedPrompt}. ${situation.message}`
+      : 'Automatic scope reviews changes since the last published review, or the full PR when needed.'}${preparation.prompts.length > 1 ? ` Prompt: ${selectedPrompt === 'repository' ? 'repository guidance' : selectedPrompt}.` : ''} ${situation.message}`
     : situation.message);
   const draftRound = $derived(reviewStartupFailed(request)
     ? request.latest_round : currentReviewRound(request));

@@ -586,6 +586,15 @@ fn run_prepare(
     println!("  authorization: {}", request.authorization());
     println!("  checks: {}", report.checks());
     println!("  review prompt: {}", report.prompt_selection());
+    if let Some(previous) = report.replaced_prompt() {
+        println!(
+            "  note: review prompt changed from {previous} to {}.",
+            report.prompt_selection()
+        );
+        if report.prompts().contains(previous) {
+            println!("  confirm with --prompt {previous} to restore the previous prompt.");
+        }
+    }
     println!(
         "  available prompts: {}",
         report

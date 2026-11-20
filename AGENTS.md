@@ -196,6 +196,7 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   in `ARCHITECTURE.md`.
   Keep detailed local API payloads and responses in `docs/api.md`.
   Prefer a small working vertical slice over placeholder integrations.
+- Do not add a changelog unless the user explicitly requests one.
 - During development, reject unsupported state and config schemas;
   add migration only when compatibility becomes a current requirement.
 - Never create or amend a commit until the user explicitly decides to do so.

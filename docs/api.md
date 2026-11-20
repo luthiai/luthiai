@@ -105,7 +105,8 @@ It returns the prepared `head_sha`, `revision`, `authorization`,
 `proposed_model`, `proposal_matches_coauthor`, `validated_model`, `resolved_model`,
 `models` with each configured model and its resolved reviewer,
 the resolved `prompt`, and available `prompts` (an ordered list of IDs beginning with `repository`).
-Preparation reuses the saved validated prompt when it is still configured; otherwise it selects `repository`.
+Preparation reuses the saved validated prompt when it is still configured;
+otherwise it selects `repository`.
 
 Validation accepts `key` with `repository` and `number`, the selected `model`,
 the inspected `head_sha` and `revision`,

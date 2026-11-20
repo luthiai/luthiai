@@ -87,7 +87,10 @@ Add `--prompt PROMPT_ID` when confirming a model to choose shared guidance for t
 luthiai prepare-review owner/repo 42 --model MODEL_ID --prompt github-actions --head HEAD_SHA --revision REVISION
 ```
 
-Omitting `--prompt` during validation selects the repository prompt; `--prompt repository` does so explicitly.
+Omitting `--prompt` during validation selects the repository prompt;
+`--prompt repository` does so explicitly.
+If preparation or confirmation changes a saved prompt, the CLI reports the previous and new choices
+and shows how to restore the previous prompt when it remains configured.
 A shared prompt replaces repository guidance.
 Changing the prompt requires the lead's confirmation, including when keeping the same model.
 Preparation without a model choice and `run-review` use the saved prompt selection.
