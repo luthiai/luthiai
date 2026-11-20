@@ -122,7 +122,8 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Select full or incremental scope in the workflow code using confirmed publication receipts.
   Verify the previous reviewed commit's ancestry and fall back to full on divergent or missing history.
   PR text and review markers never select the scope or baseline.
-- A round requires green checks for the exact PR head being reviewed after repository-configured exact-name exclusions.
+- A round requires green checks for the exact PR head being reviewed
+  after repository-configured exact-name exclusions.
   Bind each draft to that head and the author comments seen; mark it stale on change.
 - Combine check runs and commit statuses for the exact PR head when assessing CI.
   An empty result set is not green.

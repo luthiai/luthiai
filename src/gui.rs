@@ -27,7 +27,7 @@ use include_dir::{Dir, include_dir};
 use luthiai::{
     Authorization, AuthorizationScope, CommentSource, HeadSha, InputRevision, ModelValidationError,
     PrKey, RefreshOutcome, StateError,
-    config::{AgentId, ModelId, PromptHash, PromptSelection},
+    config::{AgentId, CiCheckName, ModelId, PromptHash, PromptSelection},
     github::GithubError,
     github::checks::CheckSummary,
     preparation::Readiness,
@@ -342,6 +342,7 @@ struct PreparationResponse {
     authorization: Authorization,
     configuration_sha256: PromptHash,
     checks: CheckSummary,
+    ignored_ci_checks: Vec<CiCheckName>,
     readiness: Readiness,
     readiness_message: String,
     proposed_model: ModelId,
@@ -376,6 +377,7 @@ fn prepare_for_gui(
         authorization: report.request().authorization(),
         configuration_sha256: report.configuration_sha256().clone(),
         checks: report.checks(),
+        ignored_ci_checks: report.ignored_ci_checks().to_vec(),
         readiness: report.preparation().readiness(),
         readiness_message: report.preparation().readiness().to_string(),
         proposed_model: report.preparation().proposed_model().clone(),
@@ -2038,6 +2040,7 @@ mod tests {
             authorization: Authorization::OneRound,
             configuration_sha256: PromptHash::new("a".repeat(64)).unwrap(),
             checks: CheckSummary::Green,
+            ignored_ci_checks: vec![CiCheckName::new("Optional Check").unwrap()],
             readiness,
             readiness_message: readiness.to_string(),
             proposed_model: ModelId::new("model-alpha").unwrap(),
@@ -2093,6 +2096,10 @@ mod tests {
             let body = to_bytes(response.into_body(), 8192).await.unwrap();
             let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(result["checks"], "green");
+            assert_eq!(
+                result["ignored_ci_checks"],
+                serde_json::json!(["Optional Check"])
+            );
             assert_eq!(result["readiness"], "model_validation_required");
             assert_eq!(result["head_sha"], "a".repeat(40));
             assert_eq!(result["revision"], 2);
@@ -2124,6 +2131,10 @@ mod tests {
             let body = to_bytes(response.into_body(), 8192).await.unwrap();
             let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(result["readiness"], "ready");
+            assert_eq!(
+                result["ignored_ci_checks"],
+                serde_json::json!(["Optional Check"])
+            );
             assert_eq!(result["validated_model"], "model-beta");
             assert_eq!(result["prompt"], "github-actions");
             for field in ["authorization", "configuration_sha256"] {

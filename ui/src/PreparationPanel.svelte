@@ -48,6 +48,9 @@
     title={preparation.head_sha} target="_blank" rel="noopener noreferrer"><code>{preparation.head_sha.slice(0, 7)}</code></a>
     before confirming your choices.</p>
   <p>GitHub checks: <strong>{checkLabels[preparation.checks] ?? 'Unknown'}</strong>.</p>
+  {#if preparation.ignored_ci_checks?.length}
+    <p>Checks ignored by configuration: {#each preparation.ignored_ci_checks as check, index}{index ? ', ' : ''}<code>{check}</code>{/each}.</p>
+  {/if}
   {#if stale}
     <p class="action-error" role="alert">Review readiness is outdated. Use Refresh readiness, then inspect the PR again.</p>
   {:else if !permitsValidation}

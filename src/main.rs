@@ -587,6 +587,17 @@ fn run_prepare(
     println!("  revision: {}", request.revision());
     println!("  authorization: {}", request.authorization());
     println!("  checks: {}", report.checks());
+    if !report.ignored_ci_checks().is_empty() {
+        println!(
+            "  ignored CI checks (configured): {}",
+            report
+                .ignored_ci_checks()
+                .iter()
+                .map(|check| format!("{:?}", check.as_str()))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+    }
     println!("  review prompt: {}", report.prompt_selection());
     write_prompt_change_notice(
         &mut std::io::stdout().lock(),

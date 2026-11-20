@@ -316,6 +316,8 @@ LuthiAI starts a review only after the current PR commit's CI checks are green a
 Each repository's optional `ignored_ci_checks` list matches check-run names and legacy status contexts exactly,
 including case, during preparation and every round-start recheck.
 The list is trusted local configuration and participates in the configuration fingerprint.
+Preparation snapshots expose that configured list alongside the filtered check summary for CLI and GUI display,
+including names absent from the current results.
 When legacy statuses are excluded, readiness uses the remaining individual statuses
 instead of GitHub's combined status, which still includes excluded results.
 An empty remaining result set is not green.

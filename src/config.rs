@@ -92,8 +92,12 @@ pub enum ConfigError {
     InvalidRepository(#[source] StateError),
     #[error("duplicate configured repository {0}")]
     DuplicateRepository(String),
-    #[error("CI check name must be nonblank and contain no control characters: {0:?}")]
-    InvalidCiCheckName(String),
+    #[error("repository {repository}: {source}")]
+    InvalidCiCheckName {
+        repository: String,
+        #[source]
+        source: CiCheckNameError,
+    },
     #[error("repository {repository} ignores CI check {name:?} more than once")]
     DuplicateIgnoredCiCheck {
         repository: String,
@@ -890,11 +894,16 @@ impl Agent {
 #[serde(try_from = "String")]
 pub struct CiCheckName(String);
 
+/// Invalid check name, before repository-specific configuration context is added.
+#[derive(Debug, Error, PartialEq, Eq)]
+#[error("CI check name must be nonblank and contain no control characters: {0:?}")]
+pub struct CiCheckNameError(String);
+
 impl CiCheckName {
-    pub fn new(value: impl Into<String>) -> Result<Self, ConfigError> {
+    pub fn new(value: impl Into<String>) -> Result<Self, CiCheckNameError> {
         let value = value.into();
         if value.trim().is_empty() || value.chars().any(char::is_control) {
-            return Err(ConfigError::InvalidCiCheckName(value));
+            return Err(CiCheckNameError(value));
         }
         Ok(Self(value))
     }
@@ -905,7 +914,7 @@ impl CiCheckName {
 }
 
 impl TryFrom<String> for CiCheckName {
-    type Error = ConfigError;
+    type Error = CiCheckNameError;
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -1162,7 +1171,12 @@ impl ReviewConfig {
             let mut ignored_ci_checks = Vec::new();
             let mut seen_ignored_ci_checks = HashSet::new();
             for raw_name in raw_repository.ignored_ci_checks {
-                let check_name = CiCheckName::new(raw_name)?;
+                let check_name = CiCheckName::new(raw_name).map_err(|source| {
+                    ConfigError::InvalidCiCheckName {
+                        repository: name.clone(),
+                        source,
+                    }
+                })?;
                 if !seen_ignored_ci_checks.insert(check_name.clone()) {
                     return Err(ConfigError::DuplicateIgnoredCiCheck {
                         repository: name,
@@ -1575,18 +1589,30 @@ mod tests {
         for name in ["", "  ", "Check\nName", "Check\0Name", "Check\tName"] {
             assert!(matches!(
                 CiCheckName::new(name),
-                Err(ConfigError::InvalidCiCheckName(_))
+                Err(CiCheckNameError(value)) if value == name
             ));
             assert!(serde_json::from_value::<CiCheckName>(serde_json::json!(name)).is_err());
             let mut raw = config_json();
-            raw["repositories"][0]["ignored_ci_checks"] = serde_json::json!([name]);
+            let mut other = raw["repositories"][0].clone();
+            other["name"] = "owner/other".into();
+            other["ignored_ci_checks"] = serde_json::json!([name]);
+            raw["repositories"].as_array_mut().unwrap().push(other);
+            let error = ReviewConfig::from_json(
+                &serde_json::to_vec(&raw).unwrap(),
+                Path::new("config.json"),
+            )
+            .unwrap_err();
             assert!(matches!(
-                ReviewConfig::from_json(
-                    &serde_json::to_vec(&raw).unwrap(),
-                    Path::new("config.json")
-                ),
-                Err(ConfigError::InvalidCiCheckName(_))
+                &error,
+                ConfigError::InvalidCiCheckName { repository, source }
+                    if repository == "owner/other" && source == &CiCheckNameError(name.to_owned())
             ));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "repository owner/other: CI check name must be nonblank and contain no control characters: {name:?}"
+                )
+            );
         }
         let name: CiCheckName = serde_json::from_str("\"Optional Check\"").unwrap();
         assert_eq!(name.as_str(), "Optional Check");

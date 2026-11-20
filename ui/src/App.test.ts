@@ -71,6 +71,7 @@ interface Preparation {
   authorization: string;
   configuration_sha256: string;
   checks: string;
+  ignored_ci_checks: string[];
   readiness: string;
   readiness_message: string;
   proposed_model: string;
@@ -188,7 +189,7 @@ function round(overrides: Partial<ReviewRound> = {}): ReviewRound {
 function preparation(overrides: Partial<Preparation> = {}): Preparation {
   return {
     head_sha: 'a'.repeat(40), revision: 2, authorization: 'one_round',
-    configuration_sha256: 'c'.repeat(64), checks: 'green',
+    configuration_sha256: 'c'.repeat(64), checks: 'green', ignored_ci_checks: [],
     readiness: 'model_validation_required', readiness_message: 'lead model validation is required',
     proposed_model: 'model-alpha', proposal_matches_coauthor: false, validated_model: null,
     prompt: 'repository', prompts: ['repository'],
@@ -863,6 +864,31 @@ describe('review requests page', () => {
       .toBe(`https://github.com/owner/repo/commit/${observed.head_sha}`);
     expect(within(panel).getByText('Allow one review')).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    { checks: 'green', ignored_ci_checks: ['Optional Check', 'legacy-ci'] },
+    { checks: 'failing', ignored_ci_checks: ['Optional Check'] },
+    { checks: 'green', ignored_ci_checks: [] },
+  ])('shows configured CI exclusions alongside $checks checks: $ignored_ci_checks', async (checks) => {
+    const user = userEvent.setup();
+    sessionStorage.setItem('luthiai-session', 'saved-token');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce({ ok: true })
+      .mockResolvedValueOnce({ ok: true, json: async () => preparation({ ...checks,
+        readiness: checks.checks === 'failing' ? 'checks_failing' : 'model_validation_required' }) }));
+    const { container } = render(App);
+    await showSnapshot(FakeEventSource.instances[0], [preparedRequest()]);
+    await screen.findAllByText('Review options');
+    await clickMaterialButton(user, container, 'Review options');
+    const panel = await screen.findByRole('region', { name: 'Review options for owner/repo #15' });
+    expect(within(panel).getByText('GitHub checks:', { exact: false }).textContent)
+      .toBe(`GitHub checks: ${checks.checks === 'failing' ? 'Failing' : 'Passing'}.`);
+    const exclusions = within(panel).queryByText('Checks ignored by configuration:', { exact: false });
+    if (checks.ignored_ci_checks.length) {
+      expect(exclusions?.textContent).toBe(`Checks ignored by configuration: ${checks.ignored_ci_checks.join(', ')}.`);
+    } else {
+      expect(exclusions).toBeNull();
+    }
   });
 
   it('offers the next action and starts only the currently confirmed model', async () => {

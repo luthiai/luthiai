@@ -101,7 +101,7 @@ Some files may already be deleted after a failure; retry removal to finish.
 
 Preparation accepts `repository` and `number` and uses the effective `--config-file`.
 It returns the prepared `head_sha`, `revision`, `authorization`,
-`configuration_sha256`, exact-head `checks`, `readiness` and `readiness_message`,
+`configuration_sha256`, exact-head `checks`, configured `ignored_ci_checks`, `readiness` and `readiness_message`,
 `proposed_model`, `proposal_matches_coauthor`, `validated_model`, `resolved_model`,
 `models` with each configured model and its resolved reviewer,
 the resolved `prompt`, and available `prompts` (an ordered list of IDs beginning with `repository`).
@@ -109,6 +109,8 @@ Preparation reuses the saved validated prompt when it is still configured;
 otherwise it selects `repository`.
 Preparation's `checks` and `readiness` exclude the repository's configured `ignored_ci_checks`,
 matching check-run names and legacy status contexts exactly.
+The returned `ignored_ci_checks` lists all configured exclusions in configuration order,
+including names absent from this head's results; an empty list means no exclusions.
 No remaining results means `no_results` checks and `no_checks` readiness when the other gates permit it.
 
 Validation accepts `key` with `repository` and `number`, the selected `model`,

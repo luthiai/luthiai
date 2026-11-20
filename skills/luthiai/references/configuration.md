@@ -172,6 +172,8 @@ Omitting it or using an empty list checks every reported result.
 Names match check-run `name` values and legacy commit-status `context` values exactly, including case and spaces.
 Use `luthiai github-pr owner/repo 42 --checks` to inspect those names;
 this command always shows all reported results without applying exclusions.
+Preparation output and the GUI review options show the configured exclusions alongside the filtered check summary,
+including configured names that have no result on the current head.
 Names must be nonblank and contain no control characters; duplicate entries are rejected.
 Patterns and partial matches are not supported.
 
