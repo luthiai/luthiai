@@ -181,6 +181,7 @@ pub fn prepare<'a>(
         .cloned()
         .unwrap_or_default();
     let mut models = config.review_models_for_prompt(&key, &prompt)?;
+    let ignored_ci_checks = config.ignored_ci_checks_for(&key)?;
 
     let inputs = client.preparation_inputs(observation)?;
     let request = state
@@ -189,7 +190,7 @@ pub fn prepare<'a>(
     let mut preparation = preparation::prepare(
         request,
         inputs.pull_observation(),
-        inputs.ci_observation(),
+        inputs.ci_observation(ignored_ci_checks),
         &models,
         inputs.coauthors(),
     )?;
@@ -227,7 +228,7 @@ pub fn prepare<'a>(
         preparation = preparation::prepare(
             request,
             inputs.pull_observation(),
-            inputs.ci_observation(),
+            inputs.ci_observation(ignored_ci_checks),
             &models,
             inputs.coauthors(),
         )?;
@@ -253,7 +254,7 @@ pub fn prepare<'a>(
     Ok(RoundPreparation {
         preparation,
         resolved,
-        checks: inputs.checks_summary(),
+        checks: inputs.checks_summary(ignored_ci_checks),
         pull: inputs.into_pull(),
         validation_changed,
     })

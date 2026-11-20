@@ -62,7 +62,8 @@ Revoke authorization or permanently remove a managed PR only when the lead reque
 
 ## Run and inspect
 
-Run `run-review` only with active authorization, a validated model, and green checks for the exact head.
+Run `run-review` only with active authorization, a validated model,
+and green checks for the exact head after any repository-configured CI exclusions.
 Readiness is a snapshot; report a failed startup gate instead of bypassing it or granting permission yourself.
 Keep the foreground process running and follow the reviewer's progress until it finishes.
 LuthiAI connects to the operator's existing OpenShell gateway; do not start or reconfigure that gateway.

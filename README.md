@@ -142,6 +142,10 @@ remote gateway deployment is not implemented.
 3. The reviewer reads the PR code and discussion in OpenShell and writes a private draft.
 4. You inspect the draft and either publish it unchanged or reject it.
 
+Repositories can exclude named CI checks through `ignored_ci_checks` in their configuration.
+All remaining checks must pass for the current PR commit;
+see the [CI configuration guide](skills/luthiai/references/configuration.md#ci-check-exclusions).
+
 A reviewer's recommendation does not grant formal GitHub approval;
 a human maintainer decides whether to approve and merge the PR.
 
