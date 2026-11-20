@@ -96,6 +96,63 @@ fn config_path_uses_platform_config_independently_of_state_override() {
 }
 
 #[test]
+fn prompt_selection_rejects_invalid_and_unknown_ids_before_github_or_state_changes() {
+    let directory = tempfile::tempdir().unwrap();
+    let state_file = directory.path().join("state.json");
+    let config_file = directory.path().join("config.json");
+    std::fs::write(directory.path().join("review.md"), "Repository guidance.\n").unwrap();
+    let config = serde_json::json!({
+        "schema_version": 7,
+        "execution": {"openshell":std::env::current_exe().unwrap(), "gateway":"gateway", "workspace":"default", "driver":"vm", "github_provider":"github-ro"},
+        "models": [{"id":"model-alpha", "coauthors":[]}],
+        "agents": [{"id":"claude", "models":["model-alpha"], "runner": {
+            "kind":"claude", "model_provider":"model-provider", "policy":directory.path().join("policy.yaml"), "policy_sha256":"b".repeat(64), "hold_command":["/bin/sleep","3600"]
+        }}],
+        "repositories": [{"name":"owner/repo", "prompt_file":"review.md", "review_models":["model-alpha"], "runners":[{
+            "agent":"claude", "vm_archive":{"path":directory.path().join("reviewer.tar"), "sha256":"a".repeat(64), "config_sha256":"c".repeat(64)}
+        }]}]
+    });
+    std::fs::write(&config_file, serde_json::to_vec(&config).unwrap()).unwrap();
+    run(&state_file, &["request", "owner/repo", "42", HEAD_A]);
+    let original = std::fs::read(&state_file).unwrap();
+    for (prompt, expected) in [
+        ("unknown", "shared prompt unknown is not configured"),
+        ("../actions", "invalid shared prompt ID"),
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_luthiai"))
+            .arg("--state-file")
+            .arg(&state_file)
+            .arg("--config-file")
+            .arg(&config_file)
+            .args([
+                "prepare-review",
+                "owner/repo",
+                "42",
+                "--model",
+                "model-alpha",
+                "--prompt",
+                prompt,
+                "--head",
+                HEAD_A,
+                "--revision",
+                "1",
+            ])
+            .env("LUTHIAI_GITHUB_TOKEN_RO", "bad\nheader")
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(String::from_utf8(output.stderr).unwrap().contains(expected));
+        assert_eq!(std::fs::read(&state_file).unwrap(), original);
+    }
+    let error = run_failing(
+        &state_file,
+        &["prepare-review", "owner/repo", "42", "--prompt", "shared"],
+    );
+    assert!(error.contains("--model"));
+    assert_eq!(std::fs::read(&state_file).unwrap(), original);
+}
+
+#[test]
 fn unmanage_removes_only_the_selected_pr_and_can_be_reversed_with_request() {
     let dir = tempfile::tempdir().unwrap();
     let state_file = dir.path().join("state.json");

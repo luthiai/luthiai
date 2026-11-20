@@ -77,6 +77,9 @@ enum Command {
         /// Record the lead's model choice; requires --head and --revision.
         #[arg(long)]
         model: Option<String>,
+        /// Use a shared prompt ID, or repository for the default project guidance.
+        #[arg(long, requires = "model", value_name = "PROMPT_ID")]
+        prompt: Option<String>,
         /// Head SHA the lead inspected with prepare-review or status.
         #[arg(long, value_name = "HEAD_SHA")]
         head: Option<String>,
@@ -314,9 +317,11 @@ fn run(cli: Cli) -> Result<()> {
                     validation.model(),
                     validation.agent()
                 );
+                println!("  review prompt: {}", validation.prompt_selection());
             }
             if let Some(round) = state.latest_round(&key) {
                 println!("  latest round: {} ({})", round.id(), round.status());
+                println!("  round prompt: {}", round.prompt_selection());
                 if let Some(task) = round.task() {
                     match task.scope() {
                         luthiai::prompt_builder::ReviewScope::Full => {
@@ -350,17 +355,34 @@ fn run(cli: Cli) -> Result<()> {
             repository,
             pr,
             model,
+            prompt,
             head,
             revision,
-        } => run_prepare(
-            state_file,
-            config_file,
-            repository,
-            pr,
-            model,
-            head,
-            revision,
-        )?,
+        } => {
+            let selection = match (model, head, revision) {
+                (None, None, None) => None,
+                (Some(model), Some(head), Some(revision)) => Some(
+                    round::ModelSelection::new(
+                        ModelId::new(model)?,
+                        HeadSha::new(head)?,
+                        InputRevision::new(revision)?,
+                    )
+                    .with_prompt(
+                        prompt
+                            .map(luthiai::config::PromptSelection::try_from)
+                            .transpose()?
+                            .unwrap_or_default(),
+                    ),
+                ),
+                _ => anyhow::bail!("--model, --head, and --revision must be supplied together"),
+            };
+            run_prepare(
+                state_file,
+                config_file,
+                PrKey::new(repository, pr)?,
+                selection,
+            )?;
+        }
         Command::Gateway {
             command: GatewayCommand::Status,
         } => {
@@ -548,22 +570,9 @@ fn run(cli: Cli) -> Result<()> {
 fn run_prepare(
     state_override: Option<PathBuf>,
     config_override: Option<PathBuf>,
-    repository: String,
-    pr: u64,
-    model: Option<String>,
-    head: Option<String>,
-    revision: Option<u64>,
+    key: PrKey,
+    selection: Option<round::ModelSelection>,
 ) -> Result<()> {
-    let selection = match (model, head, revision) {
-        (None, None, None) => None,
-        (Some(model), Some(head), Some(revision)) => Some(round::ModelSelection::new(
-            ModelId::new(model)?,
-            HeadSha::new(head)?,
-            InputRevision::new(revision)?,
-        )),
-        _ => anyhow::bail!("--model, --head, and --revision must be supplied together"),
-    };
-    let key = PrKey::new(repository, pr)?;
     let state_file = storage::resolve_path(state_override)?;
     let config_file = storage::resolve_config_path(config_override)?;
     let report =
@@ -576,6 +585,16 @@ fn run_prepare(
     println!("  revision: {}", request.revision());
     println!("  authorization: {}", request.authorization());
     println!("  checks: {}", report.checks());
+    println!("  review prompt: {}", report.prompt_selection());
+    println!(
+        "  available prompts: {}",
+        report
+            .prompts()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
     println!("  proposed model: {}", preparation.proposed_model());
     if preparation.proposal_matches_coauthor() {
         println!("  proposal matches a PR co-author hint; no different model is configured");

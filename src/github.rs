@@ -1843,6 +1843,7 @@ mod tests {
         #[derive(Clone, Copy)]
         enum Case {
             SelectedValid,
+            SelectedShared,
             SelectedInvalidArchive,
             ProposedValid,
             ProposedInvalidArchive,
@@ -1867,15 +1868,22 @@ mod tests {
 
         for case in [
             Case::SelectedValid,
+            Case::SelectedShared,
             Case::SelectedInvalidArchive,
             Case::ProposedValid,
             Case::ProposedInvalidArchive,
             Case::SelectedBlocked,
         ] {
-            let valid_checksum = matches!(case, Case::SelectedValid | Case::ProposedValid);
+            let valid_checksum = matches!(
+                case,
+                Case::SelectedValid | Case::SelectedShared | Case::ProposedValid
+            );
             let select_model = matches!(
                 case,
-                Case::SelectedValid | Case::SelectedInvalidArchive | Case::SelectedBlocked
+                Case::SelectedValid
+                    | Case::SelectedShared
+                    | Case::SelectedInvalidArchive
+                    | Case::SelectedBlocked
             );
             let configured_checksum = if valid_checksum {
                 checksum.as_str()
@@ -1886,6 +1894,7 @@ mod tests {
                 &serde_json::to_vec(&serde_json::json!({
                     "schema_version": 7,
                     "execution": crate::config::test_execution_json(),
+                    "prompts": [{"id":"shared", "prompt_file":crate::config::test_prompt_file("careful.md")}],
                     "models": [{"id": "model-alpha", "coauthors": []}],
                     "agents": [{"id": "claude", "models": ["model-alpha"], "runner":crate::config::test_runner_json()}],
                     "repositories": [{
@@ -1923,11 +1932,16 @@ mod tests {
             let client = GithubClient::for_api(url, Some("test-token".to_owned()));
             let refreshed = round::refresh(&client, &mut state, &config, &key).unwrap();
             assert_eq!(refreshed.outcome(), crate::RefreshOutcome::Unchanged);
-            let choice = ModelSelection::new(
+            let mut choice = ModelSelection::new(
                 crate::config::ModelId::new("model-alpha").unwrap(),
                 head.clone(),
                 revision,
             );
+            if matches!(case, Case::SelectedShared) {
+                choice = choice.with_prompt(
+                    crate::config::PromptSelection::try_from("shared".to_owned()).unwrap(),
+                );
+            }
             let result = round::prepare(
                 &client,
                 &mut state,
@@ -1936,7 +1950,7 @@ mod tests {
             );
             handle.join().unwrap();
             match case {
-                Case::SelectedValid | Case::ProposedValid => {
+                Case::SelectedValid | Case::SelectedShared | Case::ProposedValid => {
                     let prepared = result.unwrap();
                     assert_eq!(prepared.validation_changed(), select_model);
                     assert_eq!(
@@ -1952,6 +1966,32 @@ mod tests {
                         state.get(&key).unwrap().model_validation().is_some(),
                         select_model
                     );
+                    if matches!(case, Case::SelectedShared) {
+                        assert_eq!(
+                            prepared.resolved().project_prompt(),
+                            include_str!("../tests/fixtures/prompts/careful.md")
+                        );
+                        // Startup has no explicit model selection and must reuse the saved prompt.
+                        let mut state: State =
+                            serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+                        let mut replies = observation_replies(&[], &[], &[]);
+                        replies.extend(preparation_replies(&[], &[]));
+                        replies.push(json_reply(pull_route(&key), pr_body(HEAD, BASE)));
+                        let (url, handle) = serve_many(replies);
+                        let client = GithubClient::for_api(url, Some("test-token".to_owned()));
+                        let refreshed = round::refresh(&client, &mut state, &config, &key).unwrap();
+                        let started = round::prepare(&client, &mut state, refreshed, None).unwrap();
+                        handle.join().unwrap();
+                        assert_eq!(started.preparation().readiness(), Readiness::Ready);
+                        assert_eq!(
+                            started.resolved().prompt_selection(),
+                            choice.prompt_selection()
+                        );
+                        assert_eq!(
+                            started.resolved().prompt().text(),
+                            prepared.resolved().prompt().text()
+                        );
+                    }
                 }
                 Case::SelectedInvalidArchive | Case::ProposedInvalidArchive => {
                     assert!(matches!(

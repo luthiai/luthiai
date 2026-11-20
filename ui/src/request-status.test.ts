@@ -253,6 +253,8 @@ describe('review next steps', () => {
     expect(reviewSituation(request).action).toBe('prepare');
     expect(reviewSituation(request, preparation).action).toBe('run');
     expect(reviewSituation(request, preparation, false, 'beta').action).toBe('model');
+    expect(reviewSituation(request, preparation, false, 'alpha', 'github-actions'))
+      .toMatchObject({ action: 'model', title: 'Options unconfirmed', stage: 'preparation' });
     expect(reviewSituation({ ...request, revision: 3 }, preparation).action).toBe('prepare');
     expect(reviewSituation(request, preparation, true).action).toBe('prepare');
     expect(reviewSituation({ ...request, validated_model: null }, preparation).action).toBe('prepare');

@@ -1,6 +1,8 @@
 //! Persisted review rounds, publication decisions, and private agent output checks.
 
-use crate::config::{AgentId, ArchiveHash, ModelId, PromptHash, ResolvedReviewModel};
+use crate::config::{
+    AgentId, ArchiveHash, ModelId, PromptHash, PromptSelection, ResolvedReviewModel,
+};
 use crate::preparation::PullAvailability;
 use crate::publication::{
     AttemptOutcome, PublicationAttempt, PublicationHash, PublicationReceipt, PublicationStateError,
@@ -199,6 +201,8 @@ pub struct RoundRecord {
     revision: InputRevision,
     discussion: ObservedDiscussion,
     model: ModelId,
+    #[serde(default)]
+    prompt: PromptSelection,
     agent: AgentId,
     gateway: String,
     workspace: String,
@@ -253,6 +257,7 @@ impl RoundRecord {
             revision,
             discussion,
             model: choice.model().id().clone(),
+            prompt: choice.prompt_selection().clone(),
             agent: choice.agent().id().clone(),
             gateway: execution.gateway().to_owned(),
             workspace: execution.workspace().to_owned(),
@@ -333,6 +338,10 @@ impl RoundRecord {
     }
     pub fn prompt_hash(&self) -> &PromptHash {
         &self.prompt_sha256
+    }
+
+    pub fn prompt_selection(&self) -> &PromptSelection {
+        &self.prompt
     }
     pub fn format_hash(&self) -> &PromptHash {
         &self.format_sha256

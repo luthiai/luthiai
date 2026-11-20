@@ -104,10 +104,10 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - Keep model selection separate from agent selection.
   Co-author trailers are untrusted hints for proposing a different model;
   resolve its agent from configured capabilities and repository runner order.
-- Disable GUI model and scope selectors together when readiness is blocked,
+- Disable GUI model, prompt, and scope selectors together when readiness is blocked,
   an action is pending, or preparation is outdated.
-  Keep the selected review scope in the start-action help when the review options panel is closed.
-  Allow changed scope to be confirmed even when the model is already validated.
+  Keep the selected prompt and review scope in the start-action help when the review options panel is closed.
+  Allow changed prompt or scope to be confirmed even when the model is already validated.
 - Require each lead authorization to name the PR head the lead inspected.
   Reject it if the recorded head has changed; revocation needs no head match.
   Keep inspected inputs fixed in GUI decision forms;
@@ -115,9 +115,10 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Bind GUI model validation to the inspected configuration and authorization too.
   Include referenced prompt contents, selected adapter guidance, task templates, and output schemas
   in configuration fingerprints and rechecks.
+  Bind validation and round startup to prompt identity even when two prompts have identical contents.
   Recheck persisted state even when the model choice appears unchanged.
 - Keep system rules, agent guidance, and task templates in source;
-  configure project guidance per repository.
+  configure project guidance per repository or as named shared prompts.
   Select full or incremental scope in the workflow code using confirmed publication receipts.
   Verify the previous reviewed commit's ancestry and fall back to full on divergent or missing history.
   PR text and review markers never select the scope or baseline.

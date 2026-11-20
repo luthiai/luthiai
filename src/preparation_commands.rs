@@ -5,8 +5,8 @@ use luthiai::{
     Authorization, ModelValidationError, PrKey, RefreshOutcome, ReviewRequest, StateError,
     archive::{self, ArchiveError},
     config::{
-        AgentId, AgentKind, ConfigError, ModelId, PromptHash, ResolvedReviewModel, ReviewConfig,
-        VmArchive,
+        AgentId, AgentKind, ConfigError, ModelId, PromptHash, PromptSelection, ResolvedReviewModel,
+        ReviewConfig, VmArchive,
     },
     github::{GithubClient, GithubError, PullRequest, checks::CheckSummary},
     preparation::Preparation,
@@ -125,9 +125,17 @@ pub struct PreparedReview {
     models: Vec<PreparedModel>,
     resolved_index: usize,
     configuration_sha256: PromptHash,
+    prompt: PromptSelection,
+    prompts: Vec<PromptSelection>,
 }
 
 impl PreparedReview {
+    pub fn prompt_selection(&self) -> &PromptSelection {
+        &self.prompt
+    }
+    pub fn prompts(&self) -> &[PromptSelection] {
+        &self.prompts
+    }
     pub fn pull(&self) -> &PullRequest {
         &self.pull
     }
@@ -197,6 +205,9 @@ pub fn prepare(
         initial_request.ensure_inspected(selected.head(), selected.revision())?;
     }
     check_rules(initial_request, &configuration_sha256, inspected_rules)?;
+    if let Some(selection) = selection {
+        config.review_models_for_prompt(key, selection.prompt_selection())?;
+    }
     let prior_revision = initial_request.revision();
     let client = GithubClient::new()?;
     let observation = client.observe_pull_excluding(key, &initial.confirmed_review_ids(key))?;
@@ -248,8 +259,9 @@ pub fn prepare(
         }
         state = current;
     }
+    let prompt = report.resolved().prompt_selection().clone();
     let models: Vec<_> = config
-        .review_models_for(key)?
+        .review_models_for_prompt(key, &prompt)?
         .iter()
         .map(PreparedModel::from_resolved)
         .collect();
@@ -273,6 +285,8 @@ pub fn prepare(
         models,
         resolved_index,
         configuration_sha256,
+        prompt,
+        prompts: config.prompt_choices(),
     })
 }
 
@@ -391,20 +405,53 @@ mod tests {
 
     #[test]
     fn gui_validation_rejects_prompt_edits_before_fetching_github() {
+        for prompt_file in ["review.md", "shared.md"] {
+            let directory = tempfile::tempdir().unwrap();
+            let (state_file, config_file, key, head, mut rules) = fixture(directory.path());
+            fs::write(directory.path().join("shared.md"), "Shared guidance.\n").unwrap();
+            let mut raw: serde_json::Value =
+                serde_json::from_slice(&fs::read(&config_file).unwrap()).unwrap();
+            raw["prompts"] = serde_json::json!([{"id":"shared", "prompt_file":"shared.md"}]);
+            fs::write(&config_file, serde_json::to_vec(&raw).unwrap()).unwrap();
+            rules.configuration_sha256 = read_config(&config_file).unwrap().hash().clone();
+            let original_state = fs::read(&state_file).unwrap();
+            let original_config = fs::read(&config_file).unwrap();
+            fs::write(
+                directory.path().join(prompt_file),
+                "Changed instructions.\n",
+            )
+            .unwrap();
+            let selection = ModelSelection::new(
+                ModelId::new("model-alpha").unwrap(),
+                head,
+                InputRevision::new(2).unwrap(),
+            );
+            let error = prepare(
+                &state_file,
+                &config_file,
+                &key,
+                Some(&selection),
+                Some(&rules),
+            )
+            .err()
+            .unwrap();
+            assert!(matches!(error, PrepareError::StaleRules));
+            assert_eq!(fs::read(&state_file).unwrap(), original_state);
+            assert_eq!(fs::read(&config_file).unwrap(), original_config);
+        }
+    }
+
+    #[test]
+    fn preparation_rejects_unknown_shared_prompts_without_external_work_or_state_changes() {
         let directory = tempfile::tempdir().unwrap();
         let (state_file, config_file, key, head, rules) = fixture(directory.path());
-        let original_state = fs::read(&state_file).unwrap();
-        let original_config = fs::read(&config_file).unwrap();
-        fs::write(
-            directory.path().join("review.md"),
-            "Changed instructions.\n",
-        )
-        .unwrap();
+        let original = fs::read(&state_file).unwrap();
         let selection = ModelSelection::new(
             ModelId::new("model-alpha").unwrap(),
             head,
             InputRevision::new(2).unwrap(),
-        );
+        )
+        .with_prompt(PromptSelection::try_from("unknown".to_owned()).unwrap());
         let error = prepare(
             &state_file,
             &config_file,
@@ -414,9 +461,11 @@ mod tests {
         )
         .err()
         .unwrap();
-        assert!(matches!(error, PrepareError::StaleRules));
-        assert_eq!(fs::read(&state_file).unwrap(), original_state);
-        assert_eq!(fs::read(&config_file).unwrap(), original_config);
+        assert!(matches!(
+            error,
+            PrepareError::Config(ConfigError::PromptNotConfigured(_))
+        ));
+        assert_eq!(fs::read(&state_file).unwrap(), original);
     }
 
     #[test]

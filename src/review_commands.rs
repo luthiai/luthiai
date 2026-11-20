@@ -80,6 +80,7 @@ impl InspectedRun {
         }
         if !request.model_validation().is_some_and(|validation| {
             validation.model() == self.selection.model()
+                && validation.prompt_selection() == self.selection.prompt_selection()
                 && validation.head_sha() == self.selection.head()
                 && validation.revision() == self.selection.revision()
         }) {
@@ -534,7 +535,7 @@ fn execute_review(
         );
         let fresh_config = load_config(Some(config_path.to_owned()))?.1;
         let current_choice = fresh_config
-            .review_models_for(key)?
+            .review_models_for_prompt(key, record.prompt_selection())?
             .into_iter()
             .find(|candidate| candidate.model().id() == record.model())
             .context("validated model is no longer configured")?;
@@ -1024,6 +1025,8 @@ mod tests {
             "configuration",
             "prompt_file",
             "selected_model",
+            "selected_prompt",
+            "saved_prompt",
             "missing_request",
         ] {
             let mut saved = fixture.clone();
@@ -1056,6 +1059,14 @@ mod tests {
                         HeadSha::new("a".repeat(40)).unwrap(),
                         InputRevision::new(2).unwrap(),
                     )
+                }
+                "selected_prompt" => {
+                    decision.selection = decision.selection.with_prompt(
+                        luthiai::config::PromptSelection::try_from("shared".to_owned()).unwrap(),
+                    );
+                }
+                "saved_prompt" => {
+                    saved["requests"][0]["model_validation"]["prompt"] = "shared".into()
                 }
                 "missing_request" => saved["requests"] = serde_json::json!([]),
                 _ => unreachable!(),
@@ -1091,7 +1102,7 @@ mod tests {
                 "configuration" | "prompt_file" | "authorization" => {
                     assert!(matches!(error, InspectionError::RulesChanged))
                 }
-                "model_validation" | "selected_model" => {
+                "model_validation" | "selected_model" | "selected_prompt" | "saved_prompt" => {
                     assert!(matches!(error, InspectionError::ModelChanged))
                 }
                 _ => unreachable!(),

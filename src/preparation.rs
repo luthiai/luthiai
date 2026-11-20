@@ -128,6 +128,7 @@ struct PreparedChoice {
     model: ModelId,
     agent: AgentId,
     prompt_sha256: PromptHash,
+    prompt: crate::config::PromptSelection,
     vm_archive: VmArchive,
 }
 
@@ -137,12 +138,14 @@ impl PreparedChoice {
             model: choice.model().id().clone(),
             agent: choice.agent().id().clone(),
             prompt_sha256: choice.prompt().hash().clone(),
+            prompt: choice.prompt_selection().clone(),
             vm_archive: choice.archive().clone(),
         }
     }
 
     fn matches(&self, choice: &ResolvedReviewModel<'_>) -> bool {
         self.model == *choice.model().id()
+            && self.prompt == *choice.prompt_selection()
             && self.agent == *choice.agent().id()
             && self.prompt_sha256 == *choice.prompt().hash()
             && self.vm_archive == *choice.archive()
@@ -623,5 +626,129 @@ mod tests {
             .readiness(),
             Readiness::AwaitingAuthorization
         );
+    }
+
+    #[test]
+    fn prompt_selection_is_bound_to_validation_and_rounds_even_for_identical_text() {
+        use crate::config::{PromptId, PromptSelection};
+        use crate::review::{RoundId, RoundRecord};
+        let mut raw = config_json();
+        // Identical bytes still represent distinct lead choices.
+        raw["prompts"] = serde_json::json!([{"id":"shared", "prompt_file":crate::config::test_prompt_file("review.md")}]);
+        let config = ReviewConfig::from_json(
+            &serde_json::to_vec(&raw).unwrap(),
+            std::path::Path::new("config.json"),
+        )
+        .unwrap();
+        let (mut state, key, head, revision) = authorized_state();
+        let repository = config.review_models_for(&key).unwrap();
+        let shared_prompt = PromptSelection::Shared(PromptId::new("shared").unwrap());
+        let shared = config
+            .review_models_for_prompt(&key, &shared_prompt)
+            .unwrap();
+        assert_eq!(repository[0].prompt().hash(), shared[0].prompt().hash());
+        let empty = HashSet::new();
+        let prepared = prepare_for_head(
+            state.get(&key).unwrap(),
+            &head,
+            PullAvailability::Open,
+            CiState::Green,
+            &repository,
+            &empty,
+        )
+        .unwrap();
+        let verified = VerifiedArchive::for_test(repository[0].archive());
+        assert!(matches!(
+            state.validate_model(&prepared, &head, revision, &shared[0], &verified),
+            Err(crate::ModelValidationError::ModelNotPrepared(_))
+        ));
+        state
+            .validate_model(&prepared, &head, revision, &repository[0], &verified)
+            .unwrap();
+        let prepared = prepare_for_head(
+            state.get(&key).unwrap(),
+            &head,
+            PullAvailability::Open,
+            CiState::Green,
+            &shared,
+            &empty,
+        )
+        .unwrap();
+        assert_eq!(prepared.readiness(), Readiness::ModelValidationRequired);
+        state
+            .validate_model(&prepared, &head, revision, &shared[0], &verified)
+            .unwrap();
+        let wrong_prompt_round = RoundRecord::new(
+            RoundId::new("r-wrong-prompt").unwrap(),
+            key.clone(),
+            head.clone(),
+            revision,
+            state.get(&key).unwrap().discussion().unwrap().clone(),
+            &repository[0],
+            1,
+        );
+        assert!(matches!(
+            state.begin_round(wrong_prompt_round, &shared[0]),
+            Err(crate::review::RoundStateError::ModelNotValidated)
+        ));
+        let round = RoundRecord::new(
+            RoundId::new("r-shared").unwrap(),
+            key.clone(),
+            head.clone(),
+            revision,
+            state.get(&key).unwrap().discussion().unwrap().clone(),
+            &shared[0],
+            1,
+        );
+        assert_eq!(round.prompt_selection(), &shared_prompt);
+        let state: State = serde_json::from_slice(&serde_json::to_vec(&state).unwrap()).unwrap();
+        assert_eq!(
+            state
+                .get(&key)
+                .unwrap()
+                .model_validation()
+                .unwrap()
+                .prompt_selection(),
+            &shared_prompt
+        );
+        assert!(
+            state
+                .get(&key)
+                .unwrap()
+                .model_validation()
+                .unwrap()
+                .matches(&shared[0])
+        );
+        assert!(
+            !state
+                .get(&key)
+                .unwrap()
+                .model_validation()
+                .unwrap()
+                .matches(&repository[0])
+        );
+        let restored_round: RoundRecord =
+            serde_json::from_value(serde_json::to_value(&round).unwrap()).unwrap();
+        assert_eq!(restored_round.prompt_selection(), &shared_prompt);
+        raw["prompts"][0]["prompt_file"] =
+            serde_json::json!(crate::config::test_prompt_file("changed.md"));
+        let changed = ReviewConfig::from_json(
+            &serde_json::to_vec(&raw).unwrap(),
+            std::path::Path::new("config.json"),
+        )
+        .unwrap();
+        let changed = changed
+            .review_models_for_prompt(&key, &shared_prompt)
+            .unwrap();
+        let prepared = prepare_for_head(
+            state.get(&key).unwrap(),
+            &head,
+            PullAvailability::Open,
+            CiState::Green,
+            &changed,
+            &empty,
+        )
+        .unwrap();
+        assert_eq!(prepared.readiness(), Readiness::ModelValidationRequired);
     }
 }

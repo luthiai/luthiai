@@ -2,8 +2,9 @@
   import { preparationOutdated } from './request-status.js';
   import ButtonHelp from './ButtonHelp.svelte';
   import Panel from './Panel.svelte';
-  let { request, preparation, invalid, action, onRefresh, onValidate, onClose, confirmedReviewMode, selectedModel = $bindable(''), reviewMode = $bindable('auto') } = $props();
+  let { request, preparation, invalid, action, onRefresh, onValidate, onClose, confirmedReviewMode, selectedModel = $bindable(''), selectedPrompt = $bindable('repository'), reviewMode = $bindable('auto') } = $props();
   const scopeHelpId = $props.id();
+  const promptHelpId = `${scopeHelpId}-prompt`;
 
   const stale = $derived(preparationOutdated(request, preparation, invalid));
   const permitsValidation = $derived(preparation.readiness === 'ready' ||
@@ -12,6 +13,7 @@
   const modelValidated = $derived(!stale && preparation.readiness === 'ready' &&
     preparation.validated_model === selectedModel);
   const scopeChanged = $derived(reviewMode !== confirmedReviewMode);
+  const promptChanged = $derived(selectedPrompt !== (preparation.prompt ?? 'repository'));
   const readinessReasons = {
     awaiting_authorization: 'Give permission for this review before confirming a model.',
     discussion_not_observed: 'Refresh the author discussion from GitHub before confirming a model.',
@@ -27,11 +29,12 @@
     : stale ? 'Refresh readiness and inspect the current PR, permission, and model configuration before confirming.'
     : !permitsValidation ? readinessReason
     : !selected ? 'Choose an available review model first.'
-    : modelValidated && !scopeChanged ? 'These review options are already confirmed for this commit and author discussion.'
+    : modelValidated && !scopeChanged && !promptChanged ? 'These review options are already confirmed for this commit and author discussion.'
+    : promptChanged ? 'Confirm the selected review prompt with this model. GitHub inputs and readiness are checked again.'
     : modelValidated ? 'Confirm this review scope with the current model. GitHub inputs and readiness are checked again.'
     : 'Confirm these review options after rechecking the PR, permission, configuration, and GitHub checks.');
   const selectionDisabled = $derived(action?.pending || stale || !permitsValidation);
-  const validationDisabled = $derived(selectionDisabled || !selected || (modelValidated && !scopeChanged));
+  const validationDisabled = $derived(selectionDisabled || !selected || (modelValidated && !scopeChanged && !promptChanged));
   const checkLabels = {
     green: 'Passing', pending: 'Pending', failing: 'Failing', unknown: 'Unknown', no_results: 'No checks reported',
   };
@@ -63,6 +66,18 @@
   {#if preparation.proposal_matches_coauthor}
     <p class="warning">The suggested model matches a PR co-author hint because no different model is configured.</p>
   {/if}
+  {#if preparation.prompts?.length > 1}
+    <label class="model-choice">
+      Review prompt
+      <select aria-label={`Review prompt for ${request.repository} #${request.number}`} aria-describedby={promptHelpId}
+        bind:value={selectedPrompt} disabled={selectionDisabled}>
+        {#each preparation.prompts as prompt (prompt)}
+          <option value={prompt}>{prompt === 'repository' ? 'Repository prompt' : prompt}</option>
+        {/each}
+      </select>
+    </label>
+    <p class="secondary" id={promptHelpId}>Choose the repository guidance or a shared prompt to use in its place.</p>
+  {/if}
   <label class="model-choice">
     Review scope
     <select aria-label={`Review scope for ${request.repository} #${request.number}`} aria-describedby={scopeHelpId}
@@ -73,7 +88,7 @@
   </label>
   <p class="secondary" id={scopeHelpId}>{reviewMode === 'full' ? 'Review all changes in this PR.'
     : 'Review changes since the last published review. Review the full PR when there is no usable earlier review.'}</p>
-  {#if modelValidated}
+  {#if modelValidated && !promptChanged}
     <p>This model is confirmed for this commit and author discussion.</p>
   {/if}
   <p class="note" role="note">Note: Confirming your choices does not start a review.</p>

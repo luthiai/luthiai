@@ -90,6 +90,13 @@ each repository's `prompt_file` points to its prompt, commonly `prompts/<owner>/
 Relative paths start at the configuration file's directory.
 The same project prompt is used by every reviewer and model for that repository.
 
+You can also configure named shared prompts for use across repositories,
+such as a prompt focused on GitHub Actions.
+Before a review, choose either the repository prompt or one shared prompt in the GUI review options
+or through CLI model validation.
+The shared prompt replaces the repository guidance for that review;
+the repository prompt remains the default.
+
 LuthiAI combines your guidance with instructions supplied by the binary:
 
 | Prompt part | What it covers |

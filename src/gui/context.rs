@@ -150,6 +150,8 @@ mod tests {
             validated_model: None,
             resolved_model: ModelId::new("model-alpha").unwrap(),
             models: vec![],
+            prompt: luthiai::config::PromptSelection::Repository,
+            prompts: vec![luthiai::config::PromptSelection::Repository],
             context: Some(context),
         })
     }

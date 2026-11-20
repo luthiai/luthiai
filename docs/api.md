@@ -19,6 +19,7 @@ The optional `context` contains persisted display-only GitHub metadata
 bound to `head_sha` and `revision`,
 with `checked_at`, optional exact-head `checks`, and code and discussion change flags.
 Round summaries include `created_at`, optional `dispatched_at`, and optional `finished_at`.
+Model validation and round summaries include `prompt`, either `repository` or a configured shared prompt ID.
 New rounds also include `task` with `base_sha` and `scope`:
 `mode: full`, or `mode: incremental` with the previously reviewed `since` commit and confirmed `review_id`.
 
@@ -102,22 +103,29 @@ Preparation accepts `repository` and `number` and uses the effective `--config-f
 It returns the prepared `head_sha`, `revision`, `authorization`,
 `configuration_sha256`, exact-head `checks`, `readiness` and `readiness_message`,
 `proposed_model`, `proposal_matches_coauthor`, `validated_model`, `resolved_model`,
-and `models` with each configured model and its resolved reviewer.
+`models` with each configured model and its resolved reviewer,
+the resolved `prompt`, and available `prompts` (an ordered list of IDs beginning with `repository`).
+Preparation reuses the saved validated prompt when it is still configured; otherwise it selects `repository`.
 
 Validation accepts `key` with `repository` and `number`, the selected `model`,
 the inspected `head_sha` and `revision`,
 and `rules` with the prepared `authorization` and `configuration_sha256`.
-It returns a new preparation snapshot after saving the model choice.
+Optional `prompt` selects `repository` (the default) or a configured shared prompt ID.
+A shared prompt replaces repository guidance.
+It returns a new preparation snapshot after saving the model and prompt choice.
+Unknown shared IDs return HTTP 422 without changing state.
 
 Blocked preparation returns a snapshot; blocked or stale validation returns HTTP 409.
 Configuration and archive verification failures return HTTP 422.
 GitHub failures can leave freshly observed inputs saved without a new model choice.
-The snapshots omit prompts, provider details, and archive paths.
+The snapshots omit prompt contents, provider details, and archive paths.
 
 ### Start a review
 
 Run accepts the same inspected payload as validation, including the selected model and rules,
 plus optional `review_mode`: `auto` (the default) or `full`.
+Send the preparation's `prompt` with the run request.
+The selected prompt must match the saved validation, including when its contents equal another prompt's.
 Automatic scope uses only publication receipts recorded for this PR;
 copied markers and reviews without a locally recorded publication receipt do not select an incremental baseline.
 It rechecks the persisted model choice and inspected inputs, authorization, and configuration

@@ -27,7 +27,7 @@ use include_dir::{Dir, include_dir};
 use luthiai::{
     Authorization, AuthorizationScope, CommentSource, HeadSha, InputRevision, ModelValidationError,
     PrKey, RefreshOutcome, StateError,
-    config::{AgentId, ModelId, PromptHash},
+    config::{AgentId, ModelId, PromptHash, PromptSelection},
     github::GithubError,
     github::checks::CheckSummary,
     preparation::Readiness,
@@ -94,6 +94,7 @@ struct DiscussionSummary {
 struct ValidatedModelSummary {
     model: String,
     agent: String,
+    prompt: PromptSelection,
 }
 
 #[derive(Serialize)]
@@ -105,6 +106,7 @@ struct RoundSummary {
     head_sha: String,
     revision: u64,
     model: String,
+    prompt: PromptSelection,
     agent: String,
     failure: Option<FailureKind>,
     freshness: Option<Freshness>,
@@ -309,6 +311,8 @@ struct InspectedModelRequest {
     head_sha: HeadSha,
     revision: InputRevision,
     rules: InspectedRules,
+    #[serde(default)]
+    prompt: PromptSelection,
 }
 
 #[derive(Deserialize)]
@@ -321,6 +325,8 @@ struct RunRequest {
     rules: InspectedRules,
     #[serde(default)]
     review_mode: luthiai::prompt_builder::ReviewMode,
+    #[serde(default)]
+    prompt: PromptSelection,
 }
 
 #[derive(Serialize)]
@@ -343,6 +349,8 @@ struct PreparationResponse {
     validated_model: Option<ModelId>,
     resolved_model: ModelId,
     models: Vec<ModelOption>,
+    prompt: PromptSelection,
+    prompts: Vec<PromptSelection>,
     context: Option<RequestContext>,
 }
 
@@ -374,6 +382,8 @@ fn prepare_for_gui(
         proposal_matches_coauthor: report.preparation().proposal_matches_coauthor(),
         validated_model: report.preparation().validated_model().cloned(),
         resolved_model: report.resolved().model().clone(),
+        prompt: report.prompt_selection().clone(),
+        prompts: report.prompts().to_vec(),
         models: report
             .models()
             .iter()
@@ -760,7 +770,8 @@ async fn validate_model_request(
             "Sign in again to use GUI actions.",
         ));
     }
-    let selection = ModelSelection::new(request.model, request.head_sha, request.revision);
+    let selection = ModelSelection::new(request.model, request.head_sha, request.revision)
+        .with_prompt(request.prompt);
     run_preparation(state, request.key, Some(selection), Some(request.rules)).await
 }
 
@@ -776,7 +787,8 @@ async fn run_request(
         ));
     }
     let inspected = review_commands::InspectedRun::new(
-        ModelSelection::new(request.model, request.head_sha, request.revision),
+        ModelSelection::new(request.model, request.head_sha, request.revision)
+            .with_prompt(request.prompt),
         request.rules,
     )
     .with_review_mode(request.review_mode);
@@ -1133,6 +1145,7 @@ fn request_list(state_file: &Path) -> Result<RequestList> {
                     ValidatedModelSummary {
                         model: validation.model().to_string(),
                         agent: validation.agent().to_string(),
+                        prompt: validation.prompt_selection().clone(),
                     }
                 }),
                 latest_round: state
@@ -1146,6 +1159,7 @@ fn request_list(state_file: &Path) -> Result<RequestList> {
                             head_sha: round.head_sha().to_string(),
                             revision: round.revision().get(),
                             model: round.model().to_string(),
+                            prompt: round.prompt_selection().clone(),
                             agent: round.agent().to_string(),
                             failure: round.failure(),
                             freshness: round.freshness(),
@@ -1369,6 +1383,14 @@ mod tests {
                 ReviewMode::Full
             };
             assert_eq!(inspected.review_mode(), expected);
+            assert_eq!(
+                inspected.selection().prompt_selection().to_string(),
+                if key.number() == 15 {
+                    "repository"
+                } else {
+                    "github-actions"
+                }
+            );
             Ok(())
         }
         let directory = tempfile::tempdir().unwrap();
@@ -1393,6 +1415,9 @@ mod tests {
                 let mut body = validation_body();
                 body["key"]["number"] = number.into();
                 body["review_mode"] = mode.into();
+                if number == 16 {
+                    body["prompt"] = "github-actions".into();
+                }
                 let response = app
                     .clone()
                     .oneshot(json_post(
@@ -2018,6 +2043,13 @@ mod tests {
             proposed_model: ModelId::new("model-alpha").unwrap(),
             proposal_matches_coauthor: false,
             validated_model: selection.map(|choice| choice.model().clone()),
+            prompt: selection
+                .map(|choice| choice.prompt_selection().clone())
+                .unwrap_or_default(),
+            prompts: vec![
+                PromptSelection::Repository,
+                PromptSelection::try_from("github-actions".to_owned()).unwrap(),
+            ],
             resolved_model: ModelId::new(model).unwrap(),
             models: vec![
                 ModelOption {
@@ -2067,7 +2099,12 @@ mod tests {
             assert_eq!(result["configuration_sha256"], "a".repeat(64));
             assert_eq!(result["models"][1]["agent"], "claude-alt");
             assert!(result["validated_model"].is_null());
-            assert!(result.get("prompt").is_none());
+            assert_eq!(result["prompt"], "repository");
+            assert_eq!(
+                result["prompts"],
+                serde_json::json!(["repository", "github-actions"])
+            );
+            assert!(result.get("project_prompt").is_none());
             assert!(result.get("vm_archive").is_none());
             let response = app
                 .clone()
@@ -2075,7 +2112,11 @@ mod tests {
                     "/api/requests/validate-model",
                     Some("http://localhost:8080"),
                     Some("test-token"),
-                    &validation_body().to_string(),
+                    &{
+                        let mut body = validation_body();
+                        body["prompt"] = "github-actions".into();
+                        body.to_string()
+                    },
                 ))
                 .await
                 .unwrap();
@@ -2084,6 +2125,7 @@ mod tests {
             let result: serde_json::Value = serde_json::from_slice(&body).unwrap();
             assert_eq!(result["readiness"], "ready");
             assert_eq!(result["validated_model"], "model-beta");
+            assert_eq!(result["prompt"], "github-actions");
             for field in ["authorization", "configuration_sha256"] {
                 let mut body = validation_body();
                 body["rules"][field] = if field == "authorization" {
@@ -3223,6 +3265,7 @@ mod tests {
                 "head_sha": "a".repeat(40),
                 "revision": 2,
                 "model": "model-alpha",
+                "prompt": "repository",
                 "agent": "claude",
                 "failure": null,
                 "freshness": null,
