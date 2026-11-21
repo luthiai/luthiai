@@ -56,10 +56,6 @@ pub enum ConfigError {
     )]
     InvalidOciReference,
     #[error(
-        "OCI metadata path must resolve to an absolute .json path without traversal or control characters"
-    )]
-    InvalidImageMetadataPath,
-    #[error(
         "configure exactly one vm_archive or oci_image per runner, matching the execution driver"
     )]
     InvalidReviewImage,
@@ -459,30 +455,19 @@ impl TryFrom<RawVmArchive> for VmArchive {
     }
 }
 
-/// A registry image pinned by digest, with independently verified OCI metadata.
+/// A registry image whose content, including its environment, is pinned by digest.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "RawOciImage")]
+#[serde(try_from = "String", into = "String")]
 pub struct OciImage {
     reference: String,
-    #[serde(skip_serializing)]
     digest: ArchiveHash,
-    config_path: PathBuf,
-    config_sha256: ArchiveHash,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawOciImage {
-    reference: String,
-    config_path: PathBuf,
-    config_sha256: String,
-}
-
-impl TryFrom<RawOciImage> for OciImage {
+impl TryFrom<String> for OciImage {
     type Error = ConfigError;
 
-    fn try_from(raw: RawOciImage) -> Result<Self, Self::Error> {
-        let Some((name, digest)) = raw.reference.split_once("@sha256:") else {
+    fn try_from(reference: String) -> Result<Self, Self::Error> {
+        let Some((name, digest)) = reference.split_once("@sha256:") else {
             return Err(ConfigError::InvalidOciReference);
         };
         let Some((registry, repository)) = name.split_once('/') else {
@@ -502,7 +487,7 @@ impl TryFrom<RawOciImage> for OciImage {
             Some(_) => return Err(ConfigError::InvalidOciReference),
             None => repository,
         };
-        if raw.reference.len() > 512
+        if reference.len() > 512
             || !valid_oci_registry(registry)
             || repository.split('/').any(|part| {
                 part.is_empty()
@@ -521,29 +506,14 @@ impl TryFrom<RawOciImage> for OciImage {
         {
             return Err(ConfigError::InvalidOciReference);
         }
-        if !raw.config_path.is_absolute()
-            || raw
-                .config_path
-                .extension()
-                .is_none_or(|extension| extension != "json")
-            || raw
-                .config_path
-                .components()
-                .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
-            || raw
-                .config_path
-                .to_str()
-                .is_none_or(|path| path.chars().any(char::is_control))
-        {
-            return Err(ConfigError::InvalidImageMetadataPath);
-        }
         let digest = ArchiveHash::new(digest.to_owned())?;
-        Ok(Self {
-            reference: raw.reference,
-            digest,
-            config_path: raw.config_path,
-            config_sha256: ArchiveHash::new(raw.config_sha256)?,
-        })
+        Ok(Self { reference, digest })
+    }
+}
+
+impl From<OciImage> for String {
+    fn from(image: OciImage) -> Self {
+        image.reference
     }
 }
 
@@ -568,14 +538,6 @@ fn valid_oci_registry(registry: &str) -> bool {
 impl OciImage {
     pub fn reference(&self) -> &str {
         &self.reference
-    }
-
-    pub fn config_path(&self) -> &Path {
-        &self.config_path
-    }
-
-    pub fn config_checksum(&self) -> &ArchiveHash {
-        &self.config_sha256
     }
 }
 
@@ -613,10 +575,10 @@ impl ReviewImage {
         }
     }
 
-    pub fn config_checksum(&self) -> &ArchiveHash {
+    pub fn config_checksum(&self) -> Option<&ArchiveHash> {
         match self {
-            Self::VmArchive(archive) => archive.config_checksum(),
-            Self::OciImage(image) => image.config_checksum(),
+            Self::VmArchive(archive) => Some(archive.config_checksum()),
+            Self::OciImage(_) => None,
         }
     }
 }
@@ -1221,7 +1183,7 @@ struct RawPrompt {
 struct RawRunner {
     agent: String,
     vm_archive: Option<RawVmArchive>,
-    oci_image: Option<RawOciImage>,
+    oci_image: Option<String>,
 }
 
 impl ReviewConfig {
@@ -1254,9 +1216,6 @@ impl ReviewConfig {
             for runner in &mut repository.runners {
                 if let Some(archive) = &mut runner.vm_archive {
                     archive.path = resolve_host_path(&config_directory, &archive.path);
-                }
-                if let Some(image) = &mut runner.oci_image {
-                    image.config_path = resolve_host_path(&config_directory, &image.config_path);
                 }
             }
         }
@@ -1691,18 +1650,15 @@ mod tests {
     }
 
     #[test]
-    fn kubernetes_images_are_pinned_resolved_and_bound_to_the_driver() {
+    fn kubernetes_images_are_pinned_without_metadata_and_bound_to_the_driver() {
         let directory = tempfile::tempdir().unwrap();
         let config_path = directory.path().join("config.json");
         let mut raw = config_json();
         raw["execution"]["driver"] = "kubernetes".into();
         for runner in raw["repositories"][0]["runners"].as_array_mut().unwrap() {
             runner.as_object_mut().unwrap().remove("vm_archive");
-            runner["oci_image"] = serde_json::json!({
-                "reference": format!("registry.example.com/reviewer@sha256:{}", "a".repeat(64)),
-                "config_path": "images/reviewer.config.json",
-                "config_sha256": "b".repeat(64),
-            });
+            runner["oci_image"] =
+                format!("registry.example.com/reviewer@sha256:{}", "a".repeat(64)).into();
         }
         let load = |raw: &serde_json::Value| {
             ReviewConfig::from_json(&serde_json::to_vec(raw).unwrap(), &config_path)
@@ -1715,11 +1671,16 @@ mod tests {
             panic!("expected OCI image")
         };
         assert_eq!(
-            image.config_path(),
-            directory.path().join("images/reviewer.config.json")
+            image.reference(),
+            format!("registry.example.com/reviewer@sha256:{}", "a".repeat(64))
         );
+        assert_eq!(choices[0].image().config_checksum(), None);
         assert_eq!(choices[0].image().checksum().as_str(), "a".repeat(64));
         let serialized = serde_json::to_value(choices[0].image()).unwrap();
+        assert_eq!(
+            serialized,
+            serde_json::json!({"oci_image": image.reference()})
+        );
         assert_eq!(
             serde_json::from_value::<ReviewImage>(serialized).unwrap(),
             *choices[0].image()
@@ -1744,7 +1705,12 @@ mod tests {
             format!("registry..example.com/reviewer@sha256:{}", "a".repeat(64)),
         ] {
             let mut changed = raw.clone();
-            changed["repositories"][0]["runners"][0]["oci_image"]["reference"] = invalid.into();
+            assert!(matches!(
+                OciImage::try_from(invalid.clone()),
+                Err(ConfigError::InvalidOciReference)
+            ));
+            assert!(serde_json::from_value::<OciImage>(invalid.clone().into()).is_err());
+            changed["repositories"][0]["runners"][0]["oci_image"] = invalid.into();
             assert!(matches!(
                 load(&changed),
                 Err(ConfigError::InvalidOciReference)
@@ -1758,21 +1724,18 @@ mod tests {
             format!("registry:5000/team/reviewer@sha256:{}", "a".repeat(64)),
         ] {
             let mut changed = raw.clone();
-            changed["repositories"][0]["runners"][0]["oci_image"]["reference"] = reference.into();
+            changed["repositories"][0]["runners"][0]["oci_image"] = reference.into();
             load(&changed).unwrap();
         }
         for invalid in [
-            "",
-            "../metadata.json",
-            "images/../metadata.json",
-            "metadata.tar",
+            serde_json::json!({"reference": image.reference()}),
+            serde_json::json!({"reference": image.reference(), "config_path": "image.config.json", "config_sha256": "b".repeat(64)}),
+            serde_json::json!(true),
         ] {
             let mut changed = raw.clone();
-            changed["repositories"][0]["runners"][0]["oci_image"]["config_path"] = invalid.into();
-            assert!(matches!(
-                load(&changed),
-                Err(ConfigError::InvalidImageMetadataPath)
-            ));
+            changed["repositories"][0]["runners"][0]["oci_image"] = invalid.clone();
+            assert!(matches!(load(&changed), Err(ConfigError::Json(_))));
+            assert!(serde_json::from_value::<OciImage>(invalid).is_err());
         }
         let mut changed = raw.clone();
         changed["execution"]["driver"] = "vm".into();
@@ -1803,7 +1766,7 @@ mod tests {
             Err(ConfigError::InvalidReviewImage)
         ));
         let mut changed = raw;
-        changed["repositories"][0]["runners"][0]["oci_image"]["reference"] =
+        changed["repositories"][0]["runners"][0]["oci_image"] =
             format!("registry.example.com/reviewer@sha256:{}", "c".repeat(64)).into();
         assert_ne!(config.hash(), load(&changed).unwrap().hash());
     }

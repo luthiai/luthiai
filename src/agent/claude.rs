@@ -5,11 +5,10 @@ use super::{
     PreparedAgent, capture_lines,
 };
 use crate::config::AgentRunnerConfig;
-use crate::image::StagedImage;
 use crate::review::RoundRecord;
 use crate::sandbox_layout;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::io::Read;
 
@@ -18,16 +17,20 @@ pub(super) const TOOL_GUIDANCE: &str = include_str!("../prompts/claude.md");
 pub struct ClaudeAdapter;
 
 impl AgentAdapter for ClaudeAdapter {
+    fn image_environment_keys(&self) -> &'static [&'static str] {
+        &["CLAUDE_CODE_EXECUTABLE"]
+    }
+
+    fn environment(&self) -> &'static [(&'static str, &'static str)] {
+        &[("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")]
+    }
+
     fn prepare(
         &self,
-        image: &StagedImage,
+        image_environment: &BTreeMap<String, String>,
         _runner: &AgentRunnerConfig,
     ) -> Result<PreparedAgent, AgentPreparationError> {
-        PreparedAgent::from_image(
-            image,
-            "CLAUDE_CODE_EXECUTABLE",
-            &[("CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY", "1")],
-        )
+        PreparedAgent::from_environment(image_environment, "CLAUDE_CODE_EXECUTABLE")
     }
 
     fn tool_guidance(&self) -> &'static str {
@@ -510,13 +513,7 @@ mod tests {
         let shell = OpenShell::new(config.execution());
         let prepared = ClaudeAdapter
             .prepare(
-                &StagedImage::for_test(
-                    std::path::PathBuf::from("/tmp/image.tar"),
-                    std::collections::BTreeMap::from([(
-                        "CLAUDE_CODE_EXECUTABLE".into(),
-                        "/usr/bin/claude".into(),
-                    )]),
-                ),
+                &BTreeMap::from([("CLAUDE_CODE_EXECUTABLE".into(), "/usr/bin/claude".into())]),
                 choice[0].agent().runner(),
             )
             .unwrap();
@@ -567,13 +564,7 @@ mod tests {
         let shell = OpenShell::new(config.execution());
         let prepared = ClaudeAdapter
             .prepare(
-                &StagedImage::for_test(
-                    std::path::PathBuf::from("/tmp/image.tar"),
-                    std::collections::BTreeMap::from([(
-                        "CLAUDE_CODE_EXECUTABLE".into(),
-                        "/usr/bin/claude".into(),
-                    )]),
-                ),
+                &BTreeMap::from([("CLAUDE_CODE_EXECUTABLE".into(), "/usr/bin/claude".into())]),
                 choice[0].agent().runner(),
             )
             .unwrap();

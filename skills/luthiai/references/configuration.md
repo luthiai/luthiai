@@ -243,7 +243,7 @@ Model IDs should identify the exact models that the reviewer can run.
 Their spelling and case are preserved to match the provider's model IDs.
 The `agents[].id` values are lowercase ASCII identifiers.
 
-Host file paths in `prompt_file`, `vm_archive.path`, `oci_image.config_path`, `runner.policy`, and `execution.openshell`
+Host file paths in `prompt_file`, `vm_archive.path`, `runner.policy`, and `execution.openshell`
 accept absolute paths or paths relative to the directory containing `config.json`.
 Resolution is independent of the working directory when the application runs.
 Archive, policy, and OpenShell executable paths must be nonempty and cannot contain `..` traversal.
@@ -463,7 +463,8 @@ the `agents[].id` value is a separate configured identifier.
 Do not put provider credentials or publishing credentials in this configuration.
 
 Codex requires an OpenAI Responses-compatible model provider and an explicit HTTPS `OPENAI_BASE_URL`
-in verified image metadata or `runner.environment`.
+in the image environment or `runner.environment`.
+For VM archives, the verified metadata supplies the image environment.
 The endpoint must have no embedded credentials, query, or fragment.
 Provider credentials stay in the operator-managed provider; do not put them in the environment configuration.
 
@@ -478,11 +479,7 @@ For each repository runner, replace `vm_archive` with `oci_image`:
 ```json
 {
   "agent": "claude",
-  "oci_image": {
-    "reference": "registry.example.com/reviewer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-    "config_path": "images/reviewer.config.json",
-    "config_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  }
+  "oci_image": "registry.example.com/reviewer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 }
 ```
 
@@ -493,14 +490,19 @@ The gateway must be able to pull the image using its operator-managed registry a
 
 Use the OCI image reference published in the chosen
 [review-images release](https://github.com/luthiai/review-images/releases).
-Download only the matching `.tar.config.json` metadata and verify its checksum against `SHA256SUMS`;
-Kubernetes does not need a local rootfs tar.
-Choose metadata for the architecture of the remote workload, which may differ from the operator host.
-Set `config_path` to that regular metadata file, relative to the configuration directory or absolute,
-and pin its SHA-256 in `config_sha256`.
-Symlinks, changed metadata, and metadata larger than 1 MiB are rejected.
-The verified metadata supplies `config.Env` and the adapter's absolute executable path,
-with the same environment collision and endpoint checks as VM images.
+Kubernetes needs neither a local rootfs tar nor a separate metadata file.
+Set `oci_image` directly to the reference string;
+the former object with `reference`, `config_path`, or `config_sha256` fields is rejected.
+Choose an image compatible with the remote workload architecture, which may differ from the operator host.
+The sandbox inherits `config.Env` directly from the digest-pinned OCI image.
+Define an absolute `CLAUDE_CODE_EXECUTABLE` for Claude or `CODEX_PATH` for Codex in that image.
+After sandbox creation, LuthiAI reads only the selected reviewer's required non-secret executable
+and endpoint settings, validates them, and checks the CLI before starting the reviewer.
+Missing or invalid settings fail startup and trigger sandbox cleanup.
+Codex requires the same explicit HTTPS `OPENAI_BASE_URL` described above.
+Kubernetes passes only `runner.environment` and mandatory adapter settings through `--env`;
+these override image defaults.
+The restrictions on operator overrides of executable paths and mandatory adapter settings still apply.
 
 The image must provide `/bin/sh`, `/bin/chmod`, `tar`, Git, `/usr/bin/gh`,
 and the selected reviewer CLI.

@@ -78,6 +78,8 @@ Reviewer OCI images, VM archives, and their OCI metadata are published in
 Follow the [VM image setup guide](skills/luthiai/references/configuration.md#vm-images-and-policies)
 or [remote Kubernetes setup guide](skills/luthiai/references/configuration.md#kubernetes-images-and-policies)
 to select a release and configure its verified inputs.
+Kubernetes uses a digest-pinned OCI image directly;
+only VM archives require a local OCI metadata file.
 Configuration stays in private local files shared by the GUI and CLI.
 
 ### Refine review prompts

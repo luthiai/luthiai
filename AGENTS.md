@@ -40,6 +40,7 @@ add a dependency or abstraction when a current feature needs it.
   Describe the file's purpose and boundary instead of repeating what individual lines do.
 - Format with `cargo fmt`; keep `cargo clippy --all-targets -- -D warnings` and `cargo test` passing.
   Add tests for behavior and security invariants, especially authorization, review freshness, and publication decisions.
+  Match platform guards on test helpers to the tests that use them.
 - Compare canonical paths of existing fixtures when testing resolved filesystem locations across platforms.
   Windows may use short directory names and verbatim prefixes for the same location.
 - Fingerprint filesystem paths with length-prefixed OS-string bytes,
@@ -177,7 +178,8 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - Pin OCI images by digest.
   For VM archives and their separate OCI metadata, reject symlinks,
   hash the opened files, and reverify private copies before execution.
-  Read image environment values only from verified metadata.
+  Read VM image environment values only from verified metadata;
+  inspect only required non-secret settings from digest-pinned Kubernetes images inside the sandbox.
   Do not log credentials, tokens, prompts containing secrets, or draft text by default.
   Keep secret material out of repository files.
 - Verify an actual agent tool call under its exact CLI flags and working directory

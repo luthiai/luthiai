@@ -56,10 +56,6 @@ fn live_sandbox(prefix: &str, driver: luthiai::config::Driver) {
     let staged_archive =
         image::stage_image(choices[0].image(), &root.path().join("archives")).unwrap();
     let kind = choices[0].agent().runner().kind();
-    let prepared = agent::adapter(kind)
-        .prepare(&staged_archive, choices[0].agent().runner())
-        .unwrap();
-    let executable = prepared.executable();
     let executable_variable = match kind {
         AgentKind::Claude => "CLAUDE_CODE_EXECUTABLE",
         AgentKind::Codex => "CODEX_PATH",
@@ -140,6 +136,10 @@ fn live_sandbox(prefix: &str, driver: luthiai::config::Driver) {
             &SandboxMounts::new(&checkout, &instructions, &output),
         )
         .unwrap();
+    let prepared = shell
+        .prepare_agent(&round, choices[0].agent().runner(), &staged_archive)
+        .unwrap();
+    let executable = prepared.executable();
     let image_environment = shell
         .exec_command(
             &round,

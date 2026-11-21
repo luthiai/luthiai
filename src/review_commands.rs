@@ -430,9 +430,6 @@ fn execute_review(
             choice.image(),
             &private_parent(state_path).join("archives"),
         )?;
-        let adapter = agent::adapter(choice.agent().runner().kind());
-        let prepared_agent = adapter.prepare(&staged_image, choice.agent().runner())?;
-        let executable = prepared_agent.executable();
         if cancelled.load(Ordering::Relaxed) {
             failure = FailureKind::Recovery;
             anyhow::bail!("review interrupted");
@@ -486,7 +483,8 @@ fn execute_review(
             &private_policy,
             &SandboxMounts::new(&checkout_path, &instructions, &output),
         )?;
-        shell.check_agent_executable(&record, executable)?;
+        let prepared_agent = shell.prepare_agent(&record, choice.agent().runner(), &staged_image)?;
+        shell.check_agent_executable(&record, prepared_agent.executable())?;
         if cancelled.load(Ordering::Relaxed) {
             failure = FailureKind::Recovery;
             anyhow::bail!("review interrupted");

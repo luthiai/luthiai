@@ -194,16 +194,24 @@ Container engine inspection JSON and saved OCI archives are not interchangeable 
 The application verifies both files against independently configured SHA-256 values
 and consumes this archive/metadata boundary without depending on the image release process.
 Image versions advance independently of application versions.
-For Kubernetes, the runner instead requires an OCI registry reference pinned by SHA-256 digest,
-plus a local OCI metadata file with its independently configured checksum.
-It verifies and parses that metadata without requiring a local rootfs archive;
-the gateway pulls the immutable registry image.
+For Kubernetes, the runner requires only an OCI registry reference pinned by SHA-256 digest.
+Configuration and saved model validations serialize `oci_image` directly as that reference string.
+The gateway pulls the immutable registry image and inherits its environment;
+no local archive or metadata file is needed.
 `ReviewImage` carries these two image types explicitly.
 `VerifiedImage` binds model validation to the inspected image identity,
-and `StagedImage` retains verified environment values and a driver-matched creation source.
+and `StagedImage` retains the driver-matched creation source and, for VM archives, verified environment values.
 The VM path still stages and reverifies private copies of both files.
+New Kubernetes rounds record the OCI digest without a metadata checksum;
+historical rounds retain their recorded sidecar checksums.
+After creating a Kubernetes sandbox, the runner reads only the selected adapter's non-secret executable
+and endpoint variables through a bounded, non-login shell command.
+It validates the absolute executable path and required endpoint before checking the CLI or dispatching the reviewer.
+Missing or invalid values stop startup and follow the normal sandbox cleanup path.
+Only operator environment settings and mandatory adapter settings are passed explicitly for Kubernetes;
+they override the corresponding image defaults.
 The configuration loader resolves relative host paths against the directory containing `config.json`.
-This applies to project prompts, VM archives, OCI metadata, runner policies, and the OpenShell executable.
+This applies to project prompts, VM archives, runner policies, and the OpenShell executable.
 Runner snapshots retain validated absolute paths;
 VM executable paths remain absolute within the VM.
 The configuration fingerprint includes the length-prefixed OS-string bytes of the absolute configuration directory,
@@ -285,10 +293,13 @@ The adapter uses the existing private round output directory as `CODEX_HOME`;
 VM CLI runtime files remain private beside that round's draft;
 Kubernetes runtime files stay in the remote sandbox until cleanup.
 Use an OpenShell model provider that supplies OpenAI Responses API access and an `OPENAI_API_KEY` credential.
-Set its non-secret `OPENAI_BASE_URL` in the verified image metadata or `runner.environment`.
+Set its non-secret `OPENAI_BASE_URL` in the image environment or `runner.environment`.
+For VM archives, the verified metadata supplies the image environment.
 The adapter requires an explicit absolute HTTPS endpoint without embedded credentials, query, or fragment.
 It configures a custom Codex provider for that endpoint with HTTP streaming rather than WebSockets;
-missing endpoint configuration fails before sandbox creation, with no public-service fallback.
+missing endpoint configuration fails before reviewer dispatch, with no public-service fallback.
+VM metadata permits this check before sandbox creation;
+Kubernetes checks the inherited environment after creation.
 The filesystem policy blocks writes;
 it does not restrict shell execution to a command allowlist,
 so the input-boundary design is tracked in
@@ -483,7 +494,7 @@ Publication seals use the LuthiAI footer.
 | --- | --- |
 | **Prompt injection** | Treat PR files, comments, and commit messages as untrusted. LuthiAI's system instruction tells the reviewer to follow only trusted review instructions supplied by the application. |
 | **GitHub access** | Give the reviewer read-only access through an operator-configured OpenShell provider. Keep credentials used to post reviews in the operator process. |
-| **Gateway and reviewer images** | Authenticate access to the explicitly selected, operator-managed gateway. Require its expected providers before dispatch. Verify local image metadata checksums. For VM, verify private archive copies before execution; for Kubernetes, pin registry images by digest and upload only isolated round inputs. |
+| **Gateway and reviewer images** | Authenticate access to the explicitly selected, operator-managed gateway. Require its expected providers before dispatch. For VM, verify private archive and metadata copies before execution; for Kubernetes, pin registry images by digest, inspect required settings from the inherited environment, and upload only isolated round inputs. |
 | **Secrets and rotation** | Protect GitHub and model credentials in storage and logs. The gateway operator rotates provider credentials; LuthiAI never manages them. |
 | **Review freshness** | Bind CI results and each draft to the PR commit and author comments reviewed. Flag a draft if either changes before the lead publishes it. |
 | **Identity and resource use** | Verify author requests and lead decisions. Limit repeated runs when author comments trigger reviews during PR-wide authorization. Treat model co-author information as a hint for the lead to validate. |

@@ -1769,11 +1769,7 @@ mod tests {
             "models":[{"id":"model-alpha","coauthors":[]}],
             "agents":[{"id":"claude","models":["model-alpha"],"runner":crate::config::test_runner_json()}],
             "repositories":[{"name":"owner/repo","prompt_file":crate::config::test_prompt_file("review.md"),"review_models":["model-alpha"],"runners":[{
-                "agent":"claude","oci_image":{
-                    "reference":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64)),
-                    "config_path":std::env::temp_dir().join("image.config.json"),
-                    "config_sha256":"c".repeat(64),
-                }
+                "agent":"claude","oci_image":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64))
             }]}]
         });
         raw["execution"]["driver"] = "kubernetes".into();
@@ -1819,8 +1815,8 @@ mod tests {
                 .is_none()
         );
         assert_eq!(
-            stored["requests"][0]["model_validation"]["oci_image"]["reference"],
-            raw["repositories"][0]["runners"][0]["oci_image"]["reference"]
+            stored["requests"][0]["model_validation"]["oci_image"],
+            raw["repositories"][0]["runners"][0]["oci_image"]
         );
         let mut restored: State = serde_json::from_value(stored.clone()).unwrap();
         assert!(
@@ -1831,15 +1827,15 @@ mod tests {
                 .unwrap()
                 .matches(choice)
         );
-        for field in ["reference", "config_sha256", "config_path"] {
+        for reference in [
+            format!("registry.example.com/reviewer@sha256:{}", "b".repeat(64)),
+            format!(
+                "registry.example.com/other-reviewer@sha256:{}",
+                "a".repeat(64)
+            ),
+        ] {
             let mut changed = raw.clone();
-            changed["repositories"][0]["runners"][0]["oci_image"][field] = match field {
-                "reference" => {
-                    format!("registry.example.com/reviewer@sha256:{}", "b".repeat(64)).into()
-                }
-                "config_sha256" => "d".repeat(64).into(),
-                _ => serde_json::json!(std::env::temp_dir().join("other.config.json")),
-            };
+            changed["repositories"][0]["runners"][0]["oci_image"] = reference.into();
             let changed_config = load(&changed);
             let changed_choices = changed_config.review_models_for(&key()).unwrap();
             assert!(
@@ -1855,7 +1851,7 @@ mod tests {
         malformed["requests"][0]["model_validation"]["unexpected"] = true.into();
         assert!(serde_json::from_value::<State>(malformed).is_err());
         let mut malformed = stored;
-        malformed["requests"][0]["model_validation"]["oci_image"]["reference"] =
+        malformed["requests"][0]["model_validation"]["oci_image"] =
             "registry.example.com/reviewer:latest".into();
         assert!(serde_json::from_value::<State>(malformed).is_err());
         let round = RoundRecord::new(
@@ -1869,6 +1865,25 @@ mod tests {
         );
         assert_eq!(round.driver(), "kubernetes");
         assert_eq!(round.archive_hash(), choice.image().checksum());
+        assert_eq!(round.archive_config_hash(), None);
+        let serialized_round = serde_json::to_value(&round).unwrap();
+        assert!(serialized_round.get("archive_config_sha256").is_none());
+        let mut missing_vm_metadata = serialized_round.clone();
+        missing_vm_metadata["driver"] = "vm".into();
+        let missing_vm_metadata =
+            serde_json::from_value::<RoundRecord>(missing_vm_metadata).unwrap();
+        assert!(matches!(
+            missing_vm_metadata.validate(),
+            Err(RoundStateError::InvalidRecord(_))
+        ));
+        let mut invalid_round = serialized_round;
+        invalid_round["archive_config_sha256"] = "c".repeat(64).into();
+        let old_round = serde_json::from_value::<RoundRecord>(invalid_round).unwrap();
+        old_round.validate().unwrap();
+        assert!(matches!(
+            restored.begin_round(old_round, choice),
+            Err(RoundStateError::ModelNotValidated)
+        ));
         restored.begin_round(round.clone(), choice).unwrap();
         restored.dispatch_round(round.id(), 2).unwrap();
         assert_eq!(

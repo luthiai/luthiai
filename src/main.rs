@@ -636,13 +636,12 @@ fn run_prepare(
             println!("  VM archive: {}", archive.path().display());
             println!("  archive SHA-256: {}", archive.checksum());
             println!("  VM metadata: {}", archive.config_path().display());
+            println!("  metadata SHA-256: {}", archive.config_checksum());
         }
         luthiai::config::ReviewImage::OciImage(image) => {
             println!("  OCI image: {}", image.reference());
-            println!("  OCI metadata: {}", image.config_path().display());
         }
     }
-    println!("  metadata SHA-256: {}", resolved.image().config_checksum());
     println!("  readiness: {}", preparation.readiness());
     Ok(())
 }

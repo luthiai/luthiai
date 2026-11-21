@@ -2,18 +2,19 @@
 
 mod backend;
 
-use crate::agent::{self, AgentPreparationError};
-use crate::config::{AgentRunnerConfig, Driver, ExecutionConfig};
+use crate::agent::{self, AgentPreparationError, PreparedAgent};
+use crate::config::{AgentRunnerConfig, Driver, ExecutionConfig, valid_environment_entry};
 use crate::image::StagedImage;
 use crate::review::RoundRecord;
 use crate::sandbox_layout::{self, OPENSHELL_SANDBOX_NAME_LIMIT};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -383,10 +384,18 @@ impl<'a> OpenShell<'a> {
                 return Err(OpenShellError::EnvironmentCollision(key.clone()));
             }
         }
-        let prepared = agent::adapter(runner.kind()).prepare(image, runner)?;
-        for (key, value) in prepared.environment() {
-            if environment.insert(key.clone(), value.clone()).is_some() {
-                return Err(OpenShellError::EnvironmentCollision(key.clone()));
+        let adapter = agent::adapter(runner.kind());
+        if image.driver() == Driver::Vm {
+            // VM metadata is available before creation; OCI defaults are inspected
+            // inside the running Kubernetes sandbox before reviewer dispatch.
+            let _prepared = adapter.prepare(image.environment(), runner)?;
+        }
+        for &(key, value) in adapter.environment() {
+            if environment
+                .insert(key.to_owned(), value.to_owned())
+                .is_some()
+            {
+                return Err(OpenShellError::EnvironmentCollision(key.to_owned()));
             }
         }
         if environment
@@ -404,6 +413,95 @@ impl<'a> OpenShell<'a> {
         args.push("--".into());
         args.extend(runner.hold_command().iter().map(OsString::from));
         Ok(args)
+    }
+
+    /// Resolve reviewer settings from verified VM metadata or the live OCI environment.
+    pub fn prepare_agent(
+        &self,
+        round: &RoundRecord,
+        runner: &AgentRunnerConfig,
+        image: &StagedImage,
+    ) -> Result<PreparedAgent, OpenShellError> {
+        if image.driver() != self.config.driver() || round.driver() != image.driver().as_str() {
+            return Err(OpenShellError::ImageDriverMismatch);
+        }
+        let adapter = agent::adapter(runner.kind());
+        let environment = match image.driver() {
+            Driver::Vm => image.environment().clone(),
+            Driver::Kubernetes => {
+                self.read_agent_environment(round, adapter.image_environment_keys())?
+            }
+            Driver::Podman => return Err(OpenShellError::PodmanUnsupported),
+        };
+        Ok(adapter.prepare(&environment, runner)?)
+    }
+
+    fn read_agent_environment(
+        &self,
+        round: &RoundRecord,
+        keys: &'static [&'static str],
+    ) -> Result<BTreeMap<String, String>, OpenShellError> {
+        const STEP: &str = "agent environment check";
+        const LIMIT: u64 = 64 * 1024;
+        // Keys come only from the compiled adapter. Quoted expansions keep values
+        // as data, and querying only these non-secret settings excludes credentials.
+        let expansions = keys
+            .iter()
+            .map(|key| format!("\"${key}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = format!("printf '%s\\000' {expansions}");
+        let mut child = self
+            .exec_command(round, &["/bin/sh".into(), "-c".into(), script.into()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|source| OpenShellError::Launch { step: STEP, source })?;
+        let read = (|| {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or(OpenShellError::InvalidResponse(STEP))?;
+            let mut bytes = Vec::new();
+            stdout
+                .take(LIMIT + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|source| OpenShellError::Launch { step: STEP, source })?;
+            if bytes.len() as u64 > LIMIT {
+                return Err(OpenShellError::EnvironmentTooLarge);
+            }
+            Ok(bytes)
+        })();
+        if read.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let bytes = read?;
+        let status = child
+            .wait()
+            .map_err(|source| OpenShellError::Launch { step: STEP, source })?;
+        if !status.success() {
+            return Err(OpenShellError::Failed(STEP));
+        }
+        let values = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.strip_suffix('\0'))
+            .ok_or(OpenShellError::InvalidResponse(STEP))?
+            .split('\0')
+            .collect::<Vec<_>>();
+        if values.len() != keys.len() {
+            return Err(OpenShellError::InvalidResponse(STEP));
+        }
+        keys.iter()
+            .zip(values)
+            .map(|(&key, value)| {
+                if !valid_environment_entry(key, value) {
+                    return Err(OpenShellError::InvalidResponse(STEP));
+                }
+                Ok((key.to_owned(), value.to_owned()))
+            })
+            .collect()
     }
 
     pub fn check_agent_executable(
@@ -640,6 +738,176 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn kubernetes_prepares_reviewers_from_the_inherited_environment() {
+        use crate::config::AgentKind;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("openshell");
+        let calls = dir.path().join("calls");
+        let response = dir.path().join("response");
+        let failure = dir.path().join("failure");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+if test -e '{}'; then echo PRIVATE_ENV_DETAIL >&2; exit 1; fi
+if test -e '{}'; then cat '{}'; exit; fi
+while test "$#" -gt 0 && test "$1" != --; do shift; done
+shift
+export CLAUDE_CODE_EXECUTABLE='/opt/image/claude$(false)'
+export CODEX_PATH='/opt/image/codex'
+export OPENAI_BASE_URL='https://image.example/v1'
+export OPENAI_API_KEY='PRIVATE_PROVIDER_CREDENTIAL'
+exec "$@"
+"#,
+                calls.display(),
+                failure.display(),
+                response.display(),
+                response.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut raw = serde_json::json!({
+            "schema_version":7,
+            "execution": crate::config::test_execution_json(),
+            "models":[{"id":"model-alpha","coauthors":[]}],
+            "agents":[{"id":"reviewer","models":["model-alpha"],"runner":crate::config::test_runner_json()}],
+            "repositories":[{"name":"owner/repo","prompt_file":crate::config::test_prompt_file("review.md"),"review_models":["model-alpha"],"runners":[{
+                "agent":"reviewer","oci_image":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64))
+            }]}]
+        });
+        raw["execution"]["openshell"] = serde_json::json!(executable);
+        raw["execution"]["driver"] = "kubernetes".into();
+        for (kind, expected) in [
+            (AgentKind::Claude, "/opt/image/claude$(false)"),
+            (AgentKind::Codex, "/opt/image/codex"),
+        ] {
+            raw["agents"][0]["runner"]["kind"] = kind.as_str().into();
+            let config = ReviewConfig::from_json(
+                &serde_json::to_vec(&raw).unwrap(),
+                &dir.path().join("config.json"),
+            )
+            .unwrap();
+            let key = PrKey::new("owner/repo", 42).unwrap();
+            let choices = config.review_models_for(&key).unwrap();
+            let choice = &choices[0];
+            let runner = choice.agent().runner();
+            let record = RoundRecord::new(
+                RoundId::new("r-env").unwrap(),
+                key,
+                HeadSha::new("a".repeat(40)).unwrap(),
+                InputRevision::new(2).unwrap(),
+                ObservedDiscussion::new(NonZeroU64::new(7).unwrap(), vec![]).unwrap(),
+                choice,
+                1,
+            );
+            let image =
+                crate::image::stage_image(choice.image(), &dir.path().join("unused")).unwrap();
+            let shell = OpenShell::new(config.execution());
+            let prepared = shell.prepare_agent(&record, runner, &image).unwrap();
+            assert_eq!(prepared.executable(), expected);
+            if kind == AgentKind::Codex {
+                let command = agent::adapter(kind).command(&agent::AgentInvocation::new(
+                    &prepared,
+                    &record,
+                    "/sandbox/instructions/system-prompt.txt",
+                    "Review the PR.",
+                ));
+                assert!(command.iter().any(
+                    |arg| arg == "model_providers.review.base_url=\"https://image.example/v1\""
+                ));
+            }
+            let args = shell
+                .create_args(
+                    &record,
+                    runner,
+                    &image,
+                    Path::new("policy.yaml"),
+                    &SandboxMounts::new(dir.path(), dir.path(), dir.path()),
+                )
+                .unwrap();
+            assert!(!args.iter().any(|arg| {
+                arg.to_string_lossy().starts_with("CLAUDE_CODE_EXECUTABLE=")
+                    || arg.to_string_lossy().starts_with("CODEX_PATH=")
+                    || arg.to_string_lossy().starts_with("OPENAI_BASE_URL=")
+            }));
+            for &(key, value) in agent::adapter(kind).environment() {
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair[0] == "--env"
+                            && pair[1] == format!("{key}={value}").as_str())
+                );
+            }
+
+            let values = match kind {
+                AgentKind::Claude => b"\0".as_slice(),
+                AgentKind::Codex => b"\0https://image.example/v1\0".as_slice(),
+            };
+            for path in ["", "bin/relative", "/usr/../bin/reviewer"] {
+                let bytes = [path.as_bytes(), values].concat();
+                fs::write(&response, bytes).unwrap();
+                assert!(matches!(
+                    shell.prepare_agent(&record, runner, &image),
+                    Err(OpenShellError::AgentImage(
+                        AgentPreparationError::MissingExecutable { .. }
+                    ))
+                ));
+            }
+            if kind == AgentKind::Codex {
+                fs::write(
+                    &response,
+                    b"/usr/bin/codex\0https://credential@image.example/v1\0",
+                )
+                .unwrap();
+                assert!(matches!(
+                    shell.prepare_agent(&record, runner, &image),
+                    Err(OpenShellError::AgentImage(
+                        AgentPreparationError::InvalidCodexEndpoint
+                    ))
+                ));
+            }
+            for bytes in [
+                b"unterminated".as_slice(),
+                b"\xff\0",
+                b"/usr/bin/reviewer\n\0",
+                b"\0\0\0",
+            ] {
+                fs::write(&response, bytes).unwrap();
+                assert!(matches!(
+                    shell.prepare_agent(&record, runner, &image),
+                    Err(OpenShellError::InvalidResponse("agent environment check"))
+                ));
+            }
+            fs::write(&response, vec![b'x'; 64 * 1024 + 1]).unwrap();
+            assert!(matches!(
+                shell.prepare_agent(&record, runner, &image),
+                Err(OpenShellError::EnvironmentTooLarge)
+            ));
+            fs::write(&failure, b"").unwrap();
+            let error = match shell.prepare_agent(&record, runner, &image) {
+                Ok(_) => panic!("failed environment check was accepted"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                OpenShellError::Failed("agent environment check")
+            ));
+            assert!(!error.to_string().contains("PRIVATE_ENV_DETAIL"));
+            fs::remove_file(&failure).unwrap();
+            fs::remove_file(&response).unwrap();
+        }
+        let recorded = fs::read_to_string(calls).unwrap();
+        assert!(recorded.contains("--no-login-shell"));
+        assert!(!recorded.contains("OPENAI_API_KEY"));
+        assert!(!recorded.contains("PRIVATE_PROVIDER_CREDENTIAL"));
+        assert!(!dir.path().join("unused").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn kubernetes_uploads_only_private_inputs_and_stops_on_transfer_failure() {
         use std::os::unix::fs::PermissionsExt;
         let dir = tempfile::tempdir().unwrap();
@@ -659,19 +927,13 @@ mod tests {
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
         let policy = dir.path().join("policy.yaml");
         fs::write(&policy, b"policy: test\n").unwrap();
-        let metadata = dir.path().join("image.config.json");
-        let bytes = br#"{"config":{"Env":["CLAUDE_CODE_EXECUTABLE=/usr/bin/claude"]}}"#;
-        fs::write(&metadata, bytes).unwrap();
         let mut raw = serde_json::json!({
             "schema_version":7,
             "execution": crate::config::test_execution_json(),
             "models":[{"id":"model-alpha","coauthors":[]}],
             "agents":[{"id":"claude","models":["model-alpha"],"runner":crate::config::test_runner_json()}],
             "repositories":[{"name":"owner/repo","prompt_file":crate::config::test_prompt_file("review.md"),"review_models":["model-alpha"],"runners":[{
-                "agent":"claude","oci_image":{
-                    "reference":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64)),
-                    "config_path":metadata,"config_sha256":format!("{:x}",Sha256::digest(bytes)),
-                }
+                "agent":"claude","oci_image":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64))
             }]}]
         });
         raw["execution"]["openshell"] = serde_json::json!(executable);
