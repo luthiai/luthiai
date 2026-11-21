@@ -11,15 +11,15 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum ArchiveError {
-    #[error("reading VM image input {path}: {source}")]
+    #[error("reading image input {path}: {source}")]
     Read {
         path: PathBuf,
         #[source]
         source: std::io::Error,
     },
-    #[error("VM image input {0} must be a regular file")]
+    #[error("image input {0} must be a regular file")]
     NotRegular(PathBuf),
-    #[error("VM image input {path} has SHA-256 {actual}, expected {expected}")]
+    #[error("image input {path} has SHA-256 {actual}, expected {expected}")]
     ChecksumMismatch {
         path: PathBuf,
         expected: ArchiveHash,
@@ -31,13 +31,13 @@ pub enum ArchiveError {
         #[source]
         source: std::io::Error,
     },
-    #[error("VM image configuration exceeds 1 MiB")]
+    #[error("image configuration exceeds 1 MiB")]
     ConfigTooLarge,
-    #[error("VM image configuration JSON is invalid: {0}")]
+    #[error("image configuration JSON is invalid: {0}")]
     InvalidConfig(#[from] serde_json::Error),
-    #[error("VM image configuration has an invalid or duplicate Env entry at index {0}")]
+    #[error("image configuration has an invalid or duplicate Env entry at index {0}")]
     InvalidEnvironment(usize),
-    #[error("VM image environment exceeds 64 KiB")]
+    #[error("image environment exceeds 64 KiB")]
     EnvironmentTooLarge,
 }
 
@@ -77,25 +77,6 @@ impl StagedArchive {
 
     pub fn environment(&self) -> &BTreeMap<String, String> {
         &self.environment
-    }
-}
-
-#[cfg(test)]
-impl StagedArchive {
-    pub(crate) fn for_test(path: PathBuf, environment: BTreeMap<String, String>) -> Self {
-        Self { path, environment }
-    }
-}
-
-#[cfg(test)]
-impl<'a> VerifiedArchive<'a> {
-    pub(crate) fn for_test(archive: &'a VmArchive) -> Self {
-        Self {
-            archive,
-            actual_sha256: archive.checksum().as_str().to_owned(),
-            actual_config_sha256: archive.config_checksum().as_str().to_owned(),
-            environment: BTreeMap::new(),
-        }
     }
 }
 
@@ -210,7 +191,7 @@ pub fn stage_archive(archive: &VmArchive, directory: &Path) -> Result<StagedArch
     })
 }
 
-fn verify_file(
+pub(crate) fn verify_file(
     path: &Path,
     expected: &ArchiveHash,
     limit: Option<u64>,
@@ -367,7 +348,7 @@ struct ImageConfig {
     env: Vec<String>,
 }
 
-fn parse_environment(bytes: &[u8]) -> Result<BTreeMap<String, String>, ArchiveError> {
+pub(crate) fn parse_environment(bytes: &[u8]) -> Result<BTreeMap<String, String>, ArchiveError> {
     let metadata: ImageMetadata = serde_json::from_slice(bytes)?;
     if metadata.config.env.len() > 256 {
         return Err(ArchiveError::InvalidEnvironment(256));

@@ -5,9 +5,10 @@ use anyhow::{Context, Result};
 use luthiai::{
     Authorization, HeadSha, InputRevision, PrKey, RefreshOutcome, State, StateError,
     agent::{self, AgentRunError},
-    archive, checkout,
+    checkout,
     config::{AgentKind, PromptHash, ReviewConfig},
     github::{self, PullRequestState},
+    image,
     openshell::{OpenShell, OpenShellError, SandboxMounts},
     preparation::Readiness,
     prompt_builder::{self, ReviewMode, ReviewScope, ReviewTask},
@@ -170,7 +171,7 @@ pub fn gateway_status(config_override: Option<PathBuf>) -> Result<()> {
         execution.gateway(),
         execution.workspace()
     );
-    println!("  driver: vm");
+    println!("  driver: {}", execution.driver().as_str());
     println!("  GitHub provider: {}", execution.github_provider());
     for agent in config.agents() {
         shell.preflight_runner(agent.runner())?;
@@ -425,13 +426,10 @@ fn execute_review(
         Option<OpenShellError>,
         luthiai::publication::SealedBody,
     )> {
-        let staged_image = archive::stage_archive(
-            choice.archive(),
+        let staged_image = image::stage_image(
+            choice.image(),
             &private_parent(state_path).join("archives"),
         )?;
-        let adapter = agent::adapter(choice.agent().runner().kind());
-        let prepared_agent = adapter.prepare(&staged_image, choice.agent().runner())?;
-        let executable = prepared_agent.executable();
         if cancelled.load(Ordering::Relaxed) {
             failure = FailureKind::Recovery;
             anyhow::bail!("review interrupted");
@@ -485,7 +483,8 @@ fn execute_review(
             &private_policy,
             &SandboxMounts::new(&checkout_path, &instructions, &output),
         )?;
-        shell.check_agent_executable(&record, executable)?;
+        let prepared_agent = shell.prepare_agent(&record, choice.agent().runner(), &staged_image)?;
+        shell.check_agent_executable(&record, prepared_agent.executable())?;
         if cancelled.load(Ordering::Relaxed) {
             failure = FailureKind::Recovery;
             anyhow::bail!("review interrupted");
@@ -545,7 +544,7 @@ fn execute_review(
                 && prompt_builder::rules_hash(current_choice.agent().runner().kind()) == *record.format_hash()
                 && current_choice.agent().runner().hash() == record.runner_hash()
                 && current_choice.execution().hash() == record.execution_hash()
-                && current_choice.archive() == choice.archive(),
+                && current_choice.image() == choice.image(),
             "review configuration changed after model validation; run prepare-review again"
         );
         shell.verify_policy(current_choice.agent().runner())?;

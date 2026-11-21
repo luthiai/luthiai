@@ -1,14 +1,13 @@
-//! Codex CLI invocation, VM-bound tool access, and JSON event interpretation.
+//! Codex CLI invocation, sandboxed tool access, and JSON event interpretation.
 
 use super::{
     AgentAdapter, AgentInvocation, AgentPreparationError, AgentRun, AgentRunError, Log,
     PreparedAgent, capture_lines,
 };
-use crate::archive::StagedArchive;
 use crate::config::AgentRunnerConfig;
 use crate::sandbox_layout;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::ffi::OsString;
 use std::io::Read;
 
@@ -17,22 +16,26 @@ const TOOL_GUIDANCE: &str = include_str!("../prompts/codex.md");
 pub struct CodexAdapter;
 
 impl AgentAdapter for CodexAdapter {
+    fn image_environment_keys(&self) -> &'static [&'static str] {
+        &["CODEX_PATH", "OPENAI_BASE_URL"]
+    }
+
+    fn environment(&self) -> &'static [(&'static str, &'static str)] {
+        // The CLI requires its home to exist before startup. This private
+        // per-round directory is mounted or uploaded before execution.
+        &[("CODEX_HOME", sandbox_layout::OUTPUT_TARGET)]
+    }
+
     fn prepare(
         &self,
-        image: &StagedArchive,
+        image_environment: &BTreeMap<String, String>,
         runner: &AgentRunnerConfig,
     ) -> Result<PreparedAgent, AgentPreparationError> {
-        let mut prepared = PreparedAgent::from_image(
-            image,
-            "CODEX_PATH",
-            // The CLI requires its home to exist before startup. This private
-            // per-round directory exists on both sides of the VM mount.
-            &[("CODEX_HOME", sandbox_layout::OUTPUT_TARGET)],
-        )?;
+        let mut prepared = PreparedAgent::from_environment(image_environment, "CODEX_PATH")?;
         let endpoint = runner
             .environment()
             .get("OPENAI_BASE_URL")
-            .or_else(|| image.environment().get("OPENAI_BASE_URL"))
+            .or_else(|| image_environment.get("OPENAI_BASE_URL"))
             .ok_or(AgentPreparationError::InvalidCodexEndpoint)?;
         let uri = endpoint
             .parse::<ureq::http::Uri>()
@@ -225,16 +228,13 @@ mod tests {
         let choices = config.review_models_for(round.key()).unwrap();
         let prepared = CodexAdapter
             .prepare(
-                &StagedArchive::for_test(
-                    std::path::PathBuf::from("/tmp/image.tar"),
-                    std::collections::BTreeMap::from([
-                        ("CODEX_PATH".into(), "/usr/bin/codex".into()),
-                        (
-                            "OPENAI_BASE_URL".into(),
-                            "https://gateway.example/v1".into(),
-                        ),
-                    ]),
-                ),
+                &BTreeMap::from([
+                    ("CODEX_PATH".into(), "/usr/bin/codex".into()),
+                    (
+                        "OPENAI_BASE_URL".into(),
+                        "https://gateway.example/v1".into(),
+                    ),
+                ]),
                 choices[0].agent().runner(),
             )
             .unwrap();
@@ -324,10 +324,8 @@ mod tests {
             if let Some(endpoint) = endpoint {
                 environment.insert("OPENAI_BASE_URL".into(), endpoint.into());
             }
-            let image =
-                StagedArchive::for_test(std::path::PathBuf::from("/tmp/image.tar"), environment);
             assert!(matches!(
-                CodexAdapter.prepare(&image, choices[0].agent().runner()),
+                CodexAdapter.prepare(&environment, choices[0].agent().runner()),
                 Err(AgentPreparationError::InvalidCodexEndpoint)
             ));
         }

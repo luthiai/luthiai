@@ -1,9 +1,9 @@
 //! Review requests, authorization, model validation, and round decision transitions.
 
-use crate::archive::VerifiedArchive;
 use crate::config::{
-    AgentId, ModelId, PromptHash, PromptSelection, ResolvedReviewModel, VmArchive,
+    AgentId, ModelId, PromptHash, PromptSelection, ResolvedReviewModel, ReviewImage,
 };
+use crate::image::VerifiedImage;
 use crate::model::{
     Authorization, AuthorizationScope, HeadSha, InputRevision, ObservedDiscussion, PrKey,
     StateError,
@@ -27,7 +27,7 @@ pub enum ModelValidationError {
     Blocked(Readiness),
     #[error("selected model {0} was not resolved in this preparation")]
     ModelNotPrepared(ModelId),
-    #[error("the selected model's VM archive was not verified")]
+    #[error("the selected model's image inputs were not verified")]
     ArchiveNotVerified,
 }
 
@@ -202,7 +202,8 @@ pub struct ModelValidation {
     format_sha256: PromptHash,
     execution_sha256: PromptHash,
     runner_sha256: PromptHash,
-    vm_archive: VmArchive,
+    #[serde(flatten)]
+    image: ReviewImage,
 }
 
 impl ModelValidation {
@@ -235,7 +236,7 @@ impl ModelValidation {
                 == crate::prompt_builder::rules_hash(choice.agent().runner().kind())
             && self.execution_sha256 == *choice.execution().hash()
             && self.runner_sha256 == *choice.agent().runner().hash()
-            && self.vm_archive == *choice.archive()
+            && self.image == *choice.image()
     }
 
     fn matches_round(&self, round: &RoundRecord) -> bool {
@@ -248,8 +249,8 @@ impl ModelValidation {
             && self.format_sha256 == *round.format_hash()
             && self.execution_sha256 == *round.execution_hash()
             && self.runner_sha256 == *round.runner_hash()
-            && self.vm_archive.checksum() == round.archive_hash()
-            && self.vm_archive.config_checksum() == round.archive_config_hash()
+            && self.image.checksum() == round.archive_hash()
+            && self.image.config_checksum() == round.archive_config_hash()
     }
 }
 
@@ -507,8 +508,8 @@ impl State {
                 != &crate::prompt_builder::rules_hash(choice.agent().runner().kind())
             || round.execution_hash() != choice.execution().hash()
             || round.runner_hash() != choice.agent().runner().hash()
-            || round.archive_hash() != choice.archive().checksum()
-            || round.archive_config_hash() != choice.archive().config_checksum()
+            || round.archive_hash() != choice.image().checksum()
+            || round.archive_config_hash() != choice.image().config_checksum()
         {
             return Err(RoundStateError::ModelNotValidated);
         }
@@ -980,7 +981,7 @@ impl State {
         inspected_head: &HeadSha,
         inspected_revision: InputRevision,
         choice: &ResolvedReviewModel<'_>,
-        archive: &VerifiedArchive<'_>,
+        archive: &VerifiedImage<'_>,
     ) -> Result<bool, ModelValidationError> {
         let request = self.request_mut(preparation.key())?;
         request.ensure_inspected(inspected_head, inspected_revision)?;
@@ -998,7 +999,7 @@ impl State {
                 choice.model().id().clone(),
             ));
         }
-        if !archive.matches(choice.archive()) {
+        if !archive.matches(choice.image()) {
             return Err(ModelValidationError::ArchiveNotVerified);
         }
         let validation = ModelValidation {
@@ -1011,7 +1012,7 @@ impl State {
             format_sha256: crate::prompt_builder::rules_hash(choice.agent().runner().kind()),
             execution_sha256: choice.execution().hash().clone(),
             runner_sha256: choice.agent().runner().hash().clone(),
-            vm_archive: choice.archive().clone(),
+            image: choice.image().clone(),
         };
         let changed = request.model_validation.as_ref() != Some(&validation);
         request.model_validation = Some(validation);
@@ -1761,6 +1762,137 @@ mod tests {
     }
 
     #[test]
+    fn kubernetes_validation_persists_image_identity_and_rejects_retargeting() {
+        let mut raw = serde_json::json!({
+            "schema_version":7,
+            "execution":crate::config::test_execution_json(),
+            "models":[{"id":"model-alpha","coauthors":[]}],
+            "agents":[{"id":"claude","models":["model-alpha"],"runner":crate::config::test_runner_json()}],
+            "repositories":[{"name":"owner/repo","prompt_file":crate::config::test_prompt_file("review.md"),"review_models":["model-alpha"],"runners":[{
+                "agent":"claude","oci_image":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64))
+            }]}]
+        });
+        raw["execution"]["driver"] = "kubernetes".into();
+        let load = |raw: &serde_json::Value| {
+            ReviewConfig::from_json(
+                &serde_json::to_vec(raw).unwrap(),
+                std::path::Path::new("config.json"),
+            )
+            .unwrap()
+        };
+        let config = load(&raw);
+        let choices = config.review_models_for(&key()).unwrap();
+        let choice = &choices[0];
+        let head = head(HEAD_A);
+        let discussion = discussion(&[]);
+        let mut state = State::default();
+        state.record_request(key(), head.clone()).unwrap();
+        state.refresh(&key(), &head, &discussion).unwrap();
+        state
+            .authorize(&key(), &head, revision(2), AuthorizationScope::OneRound)
+            .unwrap();
+        let prepared = prepare(
+            state.get(&key()).unwrap(),
+            PullObservation::new(&head, PullAvailability::Open),
+            CiObservation::new(&head, CiState::Green),
+            &choices,
+            &HashSet::new(),
+        )
+        .unwrap();
+        state
+            .validate_model(
+                &prepared,
+                &head,
+                revision(2),
+                choice,
+                &VerifiedImage::for_test(choice.image()),
+            )
+            .unwrap();
+        let stored = serde_json::to_value(&state).unwrap();
+        assert!(
+            stored["requests"][0]["model_validation"]
+                .get("vm_archive")
+                .is_none()
+        );
+        assert_eq!(
+            stored["requests"][0]["model_validation"]["oci_image"],
+            raw["repositories"][0]["runners"][0]["oci_image"]
+        );
+        let mut restored: State = serde_json::from_value(stored.clone()).unwrap();
+        assert!(
+            restored
+                .get(&key())
+                .unwrap()
+                .model_validation()
+                .unwrap()
+                .matches(choice)
+        );
+        for reference in [
+            format!("registry.example.com/reviewer@sha256:{}", "b".repeat(64)),
+            format!(
+                "registry.example.com/other-reviewer@sha256:{}",
+                "a".repeat(64)
+            ),
+        ] {
+            let mut changed = raw.clone();
+            changed["repositories"][0]["runners"][0]["oci_image"] = reference.into();
+            let changed_config = load(&changed);
+            let changed_choices = changed_config.review_models_for(&key()).unwrap();
+            assert!(
+                !restored
+                    .get(&key())
+                    .unwrap()
+                    .model_validation()
+                    .unwrap()
+                    .matches(&changed_choices[0])
+            );
+        }
+        let mut malformed = stored.clone();
+        malformed["requests"][0]["model_validation"]["unexpected"] = true.into();
+        assert!(serde_json::from_value::<State>(malformed).is_err());
+        let mut malformed = stored;
+        malformed["requests"][0]["model_validation"]["oci_image"] =
+            "registry.example.com/reviewer:latest".into();
+        assert!(serde_json::from_value::<State>(malformed).is_err());
+        let round = RoundRecord::new(
+            RoundId::new("r-kube").unwrap(),
+            key(),
+            head,
+            revision(2),
+            discussion,
+            choice,
+            1,
+        );
+        assert_eq!(round.driver(), "kubernetes");
+        assert_eq!(round.archive_hash(), choice.image().checksum());
+        assert_eq!(round.archive_config_hash(), None);
+        let serialized_round = serde_json::to_value(&round).unwrap();
+        assert!(serialized_round.get("archive_config_sha256").is_none());
+        let mut missing_vm_metadata = serialized_round.clone();
+        missing_vm_metadata["driver"] = "vm".into();
+        let missing_vm_metadata =
+            serde_json::from_value::<RoundRecord>(missing_vm_metadata).unwrap();
+        assert!(matches!(
+            missing_vm_metadata.validate(),
+            Err(RoundStateError::InvalidRecord(_))
+        ));
+        let mut invalid_round = serialized_round;
+        invalid_round["archive_config_sha256"] = "c".repeat(64).into();
+        let old_round = serde_json::from_value::<RoundRecord>(invalid_round).unwrap();
+        old_round.validate().unwrap();
+        assert!(matches!(
+            restored.begin_round(old_round, choice),
+            Err(RoundStateError::ModelNotValidated)
+        ));
+        restored.begin_round(round.clone(), choice).unwrap();
+        restored.dispatch_round(round.id(), 2).unwrap();
+        assert_eq!(
+            restored.get(&key()).unwrap().authorization(),
+            Authorization::AwaitingLead
+        );
+    }
+
+    #[test]
     fn model_validation_tracks_exact_inputs_and_is_cleared_by_changes() {
         let raw = serde_json::json!({
             "schema_version":7,
@@ -1786,7 +1918,7 @@ mod tests {
         .unwrap();
         let review_models = config.review_models_for(&key()).unwrap();
         let current_head = head(HEAD_A);
-        let verified = VerifiedArchive::for_test(review_models[0].archive());
+        let verified = VerifiedImage::for_test(review_models[0].image());
         let mut state = State::default();
         state.record_request(key(), current_head.clone()).unwrap();
         state
@@ -1856,13 +1988,15 @@ mod tests {
             ),
             Err(ModelValidationError::Blocked(Readiness::ChecksPending))
         ));
-        let other_archive = VmArchive::new(
-            std::env::temp_dir().join("different.tar"),
-            crate::config::ArchiveHash::new("a".repeat(64)).unwrap(),
-            crate::config::ArchiveHash::new("c".repeat(64)).unwrap(),
-        )
-        .unwrap();
-        let wrong_verification = VerifiedArchive::for_test(&other_archive);
+        let other_archive = ReviewImage::VmArchive(
+            crate::config::VmArchive::new(
+                std::env::temp_dir().join("different.tar"),
+                crate::config::ArchiveHash::new("a".repeat(64)).unwrap(),
+                crate::config::ArchiveHash::new("c".repeat(64)).unwrap(),
+            )
+            .unwrap(),
+        );
+        let wrong_verification = VerifiedImage::for_test(&other_archive);
         assert!(matches!(
             state.validate_model(
                 &prepared,
@@ -1882,7 +2016,7 @@ mod tests {
         )
         .unwrap();
         let changed_models = changed_config.review_models_for(&key()).unwrap();
-        let changed_verification = VerifiedArchive::for_test(changed_models[0].archive());
+        let changed_verification = VerifiedImage::for_test(changed_models[0].image());
         assert!(matches!(
             state.validate_model(
                 &prepared,
@@ -2126,7 +2260,7 @@ mod tests {
                 &head,
                 revision(2),
                 choice,
-                &VerifiedArchive::for_test(choice.archive()),
+                &VerifiedImage::for_test(choice.image()),
             )
             .unwrap();
         let first = RoundRecord::new(
@@ -2263,7 +2397,7 @@ mod tests {
                 &later_head,
                 revision(3),
                 choice,
-                &VerifiedArchive::for_test(choice.archive()),
+                &VerifiedImage::for_test(choice.image()),
             )
             .unwrap();
         later_state
@@ -2304,7 +2438,7 @@ mod tests {
                 &head,
                 revision(2),
                 choice,
-                &VerifiedArchive::for_test(choice.archive()),
+                &VerifiedImage::for_test(choice.image()),
             )
             .unwrap();
         let third = RoundRecord::new(
@@ -2360,7 +2494,7 @@ mod tests {
                 &head,
                 revision(2),
                 choice,
-                &VerifiedArchive::for_test(choice.archive()),
+                &VerifiedImage::for_test(choice.image()),
             )
             .unwrap();
         assert_eq!(
@@ -2883,7 +3017,7 @@ mod tests {
                 &head,
                 revision(2),
                 choice,
-                &VerifiedArchive::for_test(choice.archive()),
+                &VerifiedImage::for_test(choice.image()),
             )
             .unwrap();
         let round = RoundRecord::new(

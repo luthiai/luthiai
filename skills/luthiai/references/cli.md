@@ -30,7 +30,7 @@ Do not edit state JSON to change authorization, model validation, or round decis
 | `ROUND_ID` | The saved round reported by `run-review` or `status`. |
 | `BODY_SHA256` | The exact publication body hash from `show-draft`. |
 
-The operator supplies trusted configuration and an existing OpenShell gateway with VM support,
+The operator supplies trusted configuration and an existing OpenShell gateway with VM or Kubernetes support,
 compatible model providers, and a read-only GitHub provider.
 `gateway status` checks that setup without changing it.
 Use the setup guide when configuration is missing; the operator manages gateway providers.
@@ -82,7 +82,7 @@ luthiai prepare-review owner/repo 42
 luthiai prepare-review owner/repo 42 --model MODEL_ID --head HEAD_SHA --revision REVISION
 ```
 
-Validation requires an open PR, active authorization, green exact-head checks, and a verified VM archive.
+Validation requires an open PR, active authorization, green exact-head checks, and verified image inputs.
 If preparation changes the inputs or clears authorization, return to the lead with the new values.
 Neither preparation nor validation starts a review or consumes one-round authorization.
 The reviewer is resolved from configured support for the selected model; it is not a separate CLI choice.

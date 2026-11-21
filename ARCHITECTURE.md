@@ -13,13 +13,13 @@ Requests are recorded, GitHub inputs refreshed, and each review started explicit
 - **GitHub**: Supplies commits, model co-author hints, author comments, check results, and earlier reviews,
   and displays reviews the lead has chosen to publish.
 - **Configuration and state**: The configuration file names repositories, models, reviewers, project prompts,
-  VM archives and checksums, and the existing OpenShell gateway.
+  reviewer images and checksums, and the existing OpenShell gateway.
   The state file records PR inputs, authorization, model validation, rounds, and publication receipts.
   Private drafts, instructions, and logs live beside the state file.
 - **Workflow library**: Enforces authorization, exact-head CI, model validation, and draft freshness.
   It composes system, reviewer, project, and per-round task instructions,
   proposes a model different from the PR's co-author model when possible,
-  resolves the first compatible configured reviewer, and supplies that reviewer's instructions and verified archive for each round.
+  resolves the first compatible configured reviewer, and supplies that reviewer's instructions and verified image inputs for each round.
   External adapters connect to GitHub and OpenShell;
   LuthiAI manages only the sandboxes it creates and posts only drafts the lead has chosen to publish.
 - **CLI and GUI**: Let the lead and their assistant inspect requests, refresh GitHub inputs, authorize reviews,
@@ -29,7 +29,7 @@ Requests are recorded, GitHub inputs refreshed, and each review started explicit
   independently of browser connections.
 - **OpenShell gateway**: Runs independently of LuthiAI.
   Its operator manages gateway access, provider profiles, provider credentials, and rotation.
-- **OpenShell sandbox**: Runs a selected reviewer, such as Claude or Codex, from the VM archive configured for that repository and reviewer,
+- **OpenShell sandbox**: Runs a selected reviewer, such as Claude or Codex, from the VM archive or pinned OCI image configured for that repository and reviewer,
   with instructions and named providers selected by LuthiAI.
   The reviewer has read-only GitHub access and returns a private draft to LuthiAI;
   the operator process holds the publishing authority.
@@ -78,7 +78,7 @@ it never authorizes a review or publication.
 
 ```mermaid
 flowchart TD
-    A["Assistant configures repositories, models, reviewers,<br/>prompts, VM archives, and publishing account"] --> C["Assistant records a request through the CLI"]
+    A["Assistant configures repositories, models, reviewers,<br/>prompts, reviewer images, and publishing account"] --> C["Assistant records a request through the CLI"]
     C --> INIT{{"Set authorization:<br/>awaiting lead"}}
     INIT --> D["Lead refreshes and inspects PR inputs"]
     D -->|Lead authorizes inspected inputs and scope| V{"Inspected head and revision<br/>match recorded inputs?"}
@@ -183,7 +183,7 @@ whose policy enforces read-only REST access for the reviewer.
 For each round, LuthiAI checks authenticated gateway access and the expected
 named providers, then creates, monitors, and removes its own sandbox.
 
-The trusted configuration names the driver and supplies the verified VM image,
+The trusted configuration names the driver and supplies the reviewer image,
 provider names, non-secret environment, policy, and resource limits.
 The separate [review-images repository](https://github.com/luthiai/review-images)
 owns the reviewer Containerfiles, native builds, and image releases.
@@ -194,6 +194,22 @@ Container engine inspection JSON and saved OCI archives are not interchangeable 
 The application verifies both files against independently configured SHA-256 values
 and consumes this archive/metadata boundary without depending on the image release process.
 Image versions advance independently of application versions.
+For Kubernetes, the runner requires only an OCI registry reference pinned by SHA-256 digest.
+Configuration and saved model validations serialize `oci_image` directly as that reference string.
+The gateway pulls the immutable registry image and inherits its environment;
+no local archive or metadata file is needed.
+`ReviewImage` carries these two image types explicitly.
+`VerifiedImage` binds model validation to the inspected image identity,
+and `StagedImage` retains the driver-matched creation source and, for VM archives, verified environment values.
+The VM path still stages and reverifies private copies of both files.
+New Kubernetes rounds record the OCI digest without a metadata checksum;
+historical rounds retain their recorded sidecar checksums.
+After creating a Kubernetes sandbox, the runner reads only the selected adapter's non-secret executable
+and endpoint variables through a bounded, non-login shell command.
+It validates the absolute executable path and required endpoint before checking the CLI or dispatching the reviewer.
+Missing or invalid values stop startup and follow the normal sandbox cleanup path.
+Only operator environment settings and mandatory adapter settings are passed explicitly for Kubernetes;
+they override the corresponding image defaults.
 The configuration loader resolves relative host paths against the directory containing `config.json`.
 This applies to project prompts, VM archives, runner policies, and the OpenShell executable.
 Runner snapshots retain validated absolute paths;
@@ -207,16 +223,31 @@ Referenced image and policy files are not canonicalized;
 their existing traversal, symlink, and checksum checks still apply.
 LuthiAI fixes the mount targets, TTY and restart behavior,
 and each reviewer adapter's command rules in code.
-The runner accepts only a configured `vm` driver for now and checks that the gateway supports it.
+The runner selects the configured `vm` or `kubernetes` driver and checks that the gateway reports it.
+The internal `SandboxBackend` trait separates driver-specific platform checks,
+creation arguments, and input delivery into VM and Kubernetes implementations.
+Provider checks, environment validation, execution, and cleanup remain shared in `OpenShell`.
 It reports `podman` as unsupported or an unknown driver as invalid
 before any sandbox is created.
 
-Round-specific checkout and output paths are filled in when the sandbox is created.
-The runner validates these values against the read-only input and isolated output rules.
+VM execution supplies fixed read-only checkout and instruction mounts and a private writable output mount.
+Kubernetes sends no host mounts or driver configuration overrides to the gateway.
+After creating its sandbox, it uploads only the round's checkout, instructions, and initial output directory
+at the same fixed sandbox paths.
+Uploads run from each directory with `--no-git-ignore` to preserve `.git` and ignored review inputs.
+The backend removes write permissions from the uploaded checkout and instructions before dispatch.
+The sandbox user owns these disposable copies and can restore their write permissions;
+file modes do not provide the VM's enforced read-only mount boundary.
+The current gateway's workspace write grant also overrides child `read_only` policy entries,
+and startup filesystem permissions cannot be tightened after uploads.
+No remote input changes are copied back to the host.
+The operator captures the final response and log directly from the reviewer stream;
+it never downloads or unpacks an agent-controlled output directory.
+Input upload or permission failures stop startup and use the shared sandbox cleanup path.
+
 It attaches only those providers and disables automatic provider creation.
-Codex disables its own nested Linux sandbox and relies on the outer VM boundary;
-the VM still supplies the only readable inputs, the only writable output,
-and the enforced network and GitHub policies.
+Codex disables its own nested Linux sandbox and relies on the outer OpenShell boundary
+for host isolation and enforced network and GitHub policies.
 Provider names alone do not prove their permissions;
 the operator must maintain the required policies,
 and the runner must reject any incompatible policy it can inspect.
@@ -249,22 +280,26 @@ This is a known limitation tracked in [issue #13](https://github.com/luthiai/lut
 The Codex adapter requires Codex CLI 0.159.3 or newer with sandbox-mode support.
 It uses `codex exec --json --ephemeral --ignore-user-config --ignore-rules --strict-config`.
 It selects Codex `danger-full-access` internally because nested user namespaces are unavailable
-inside the OpenShell VM; the outer VM still controls filesystem mounts, network destinations,
-and read-only GitHub access.
+inside the OpenShell workload; OpenShell still controls host isolation, network destinations,
+and read-only GitHub access, with the driver-specific input permissions described above.
 Approval prompts, repository instruction loading, hooks, automatic skill instructions,
 MCP servers, plugins, multi-agent delegation, memories, and web search are disabled.
 The trusted system prompt is supplied through `model_instructions_file`.
 Codex receives the required JSON Schema through `--output-schema`,
 and its final response is captured from the JSON event stream.
-Its tools receive no writable repository mount;
+VM tools receive no writable repository mount;
 the only writable mount is the private round output directory.
 The adapter uses the existing private round output directory as `CODEX_HOME`;
-any CLI runtime files remain private beside that round's draft.
+VM CLI runtime files remain private beside that round's draft;
+Kubernetes runtime files stay in the remote sandbox until cleanup.
 Use an OpenShell model provider that supplies OpenAI Responses API access and an `OPENAI_API_KEY` credential.
-Set its non-secret `OPENAI_BASE_URL` in the verified image metadata or `runner.environment`.
+Set its non-secret `OPENAI_BASE_URL` in the image environment or `runner.environment`.
+For VM archives, the verified metadata supplies the image environment.
 The adapter requires an explicit absolute HTTPS endpoint without embedded credentials, query, or fragment.
 It configures a custom Codex provider for that endpoint with HTTP streaming rather than WebSockets;
-missing endpoint configuration fails before sandbox creation, with no public-service fallback.
+missing endpoint configuration fails before reviewer dispatch, with no public-service fallback.
+VM metadata permits this check before sandbox creation;
+Kubernetes checks the inherited environment after creation.
 The filesystem policy blocks writes;
 it does not restrict shell execution to a command allowlist,
 so the input-boundary design is tracked in
@@ -459,7 +494,7 @@ Publication seals use the LuthiAI footer.
 | --- | --- |
 | **Prompt injection** | Treat PR files, comments, and commit messages as untrusted. LuthiAI's system instruction tells the reviewer to follow only trusted review instructions supplied by the application. |
 | **GitHub access** | Give the reviewer read-only access through an operator-configured OpenShell provider. Keep credentials used to post reviews in the operator process. |
-| **Gateway and VM archives** | Authenticate access to the explicitly selected, operator-managed gateway. Require its expected providers before dispatch. Let only authorized operators configure archives, require SHA-256 checksums, and verify a private copy before execution. Pin any OCI source images by digest. |
+| **Gateway and reviewer images** | Authenticate access to the explicitly selected, operator-managed gateway. Require its expected providers before dispatch. For VM, verify private archive and metadata copies before execution; for Kubernetes, pin registry images by digest, inspect required settings from the inherited environment, and upload only isolated round inputs. |
 | **Secrets and rotation** | Protect GitHub and model credentials in storage and logs. The gateway operator rotates provider credentials; LuthiAI never manages them. |
 | **Review freshness** | Bind CI results and each draft to the PR commit and author comments reviewed. Flag a draft if either changes before the lead publishes it. |
 | **Identity and resource use** | Verify author requests and lead decisions. Limit repeated runs when author comments trigger reviews during PR-wide authorization. Treat model co-author information as a hint for the lead to validate. |
@@ -487,7 +522,7 @@ A human maintainer decides whether to approve and merge the PR.
 - `src/github.rs` and `src/github/` adapt read-only GitHub observations,
   checks, commits, discussion, preparation, and publication.
 - `src/agent.rs` and `src/agent/` implement reviewer adapters.
-- `src/checkout.rs`, `src/openshell.rs`, `src/archive.rs`,
+- `src/checkout.rs`, `src/openshell.rs`, `src/openshell/`, `src/image.rs`, `src/archive.rs`,
   and `src/sandbox_layout.rs` form the sandbox input, output, and lifecycle boundary.
 - `src/gui.rs`, `src/gui/`, `src/gui_runs.rs`, and `src/gui_diagnostics.rs` implement the loopback GUI and its jobs.
 - `src/main.rs` and the `src/*_commands.rs` modules implement the operator CLI.
@@ -553,20 +588,32 @@ cd ..
 cargo install --path . --locked --force
 ```
 
-An opt-in synthetic VM integration test exercises the gateway, provider attachment,
-image environment, read-only mounts, private output retrieval,
-and sandbox cleanup without calling a model:
+Opt-in synthetic integration tests exercise the gateway, provider attachment,
+read-only GitHub access, image environment, input delivery and permissions,
+private draft capture, and sandbox cleanup without calling a model:
 
 ```sh
 LUTHIAI_LIVE_VM_CONFIG=/absolute/path/to/private-config.json \
-  cargo test --test live_vm -- --ignored
+  cargo test --test live_openshell local_vm -- --ignored
 ```
 
-The config must point to an existing VM tar, its `.config.json` metadata,
-and a policy with correct checksums.
-Set `LUTHIAI_LIVE_VM_DIR` when the gateway requires test paths
+For an existing Kubernetes gateway:
+
+```sh
+LUTHIAI_LIVE_KUBERNETES_CONFIG=/absolute/path/to/private-config.json \
+  cargo test --test live_openshell remote_kubernetes -- --ignored
+```
+
+The config must supply driver-matched image inputs and a policy with correct checksums,
+plus existing compatible model and read-only GitHub providers.
+The selected repository must be readable through that GitHub provider.
+Set `LUTHIAI_LIVE_VM_DIR` when the VM gateway requires test paths
 on a particular host directory.
 Set `LUTHIAI_LIVE_VM_REPOSITORY` when the configuration does not
 include the test's default `owner/repo` repository.
+Kubernetes accepts the corresponding `LUTHIAI_LIVE_KUBERNETES_DIR`
+and `LUTHIAI_LIVE_KUBERNETES_REPOSITORY` variables.
 The test checks the executable and CLI flags for the first resolved reviewer,
-so a configuration selecting Codex exercises its VM image as well.
+so a configuration selecting Codex exercises its image as well.
+Set `LUTHIAI_LIVE_MODEL_TOOLS=1` to additionally call the configured model
+and verify a real agent tool invocation under the runner's exact flags and working directory.

@@ -1,7 +1,7 @@
 # LuthiAI configuration
 
 Read this reference when asked to set up or change repositories, models, project prompts,
-VM image references, local file locations, or GitHub access for the installed application.
+reviewer images, local file locations, or GitHub access for the installed application.
 
 - [Setup workflow](#setup-workflow)
 - [Local files](#local-files)
@@ -11,6 +11,7 @@ VM image references, local file locations, or GitHub access for the installed ap
 - [Paths and model selection](#paths-and-model-selection)
 - [Project review prompts](#project-review-prompts)
 - [VM images and policies](#vm-images-and-policies)
+- [Kubernetes images and policies](#kubernetes-images-and-policies)
 - [GitHub credentials and HTTPS](#github-credentials-and-https)
 - [Verify setup](#verify-setup)
 
@@ -21,7 +22,7 @@ Inspect existing configuration before editing it and preserve unrelated settings
 Keep the GUI and CLI on the same files; do not edit saved review state as a setup shortcut.
 
 Use the operator's trusted repository list, model IDs, provider names, publishing account,
-VM archives, policy files, and expected checksums.
+VM archives or pinned OCI images, policy files, and expected checksums.
 If required values are missing, identify them for the operator rather than inventing working values.
 The example below contains placeholders, not usable provider names or verified image checksums.
 
@@ -64,8 +65,8 @@ Keep the state file private to the lead operator.
 
 Install the OpenShell 0.1.7 CLI and configure its named gateway and workspace
 before running `gateway status` or `run-review`.
-The gateway operator starts the gateway with VM driver support,
-enables the trusted VM mount configuration,
+The gateway operator starts the gateway with VM or Kubernetes driver support,
+enables trusted VM mount configuration when using VM,
 and configures a model provider compatible with the validated model
 and a GitHub provider restricted to read-only REST access.
 LuthiAI checks authenticated access and named provider availability,
@@ -73,8 +74,9 @@ and rejects a write-capable GitHub policy when the gateway exposes one.
 The operator remains responsible for provider policy and credential rotation.
 
 The VM gateway must run on the host that holds the staged archive and mount paths.
-The current runner is intended for macOS and Linux VM setups;
-remote gateway deployment is not implemented.
+The VM runner supports macOS and Linux hosts.
+The Kubernetes runner supports existing remote gateways;
+it uploads private round inputs rather than mounting operator host paths.
 
 ## Minimal review configuration
 
@@ -440,11 +442,12 @@ Duplicate environment names are rejected.
 
 The `hold_command` keeps a newly created sandbox alive without starting a reviewer;
 the runner then rechecks every gate before executing the selected reviewer separately.
-The sandbox mounts only the checkout and trusted instructions read-only,
+The VM sandbox mounts only the checkout and trusted instructions read-only,
 plus the round's output directory writable.
 Their fixed sandbox paths are `/sandbox/src`, `/sandbox/instructions`,
 and `/sandbox/output`, respectively.
 The runner always disables TTY and restarts and prevents automatic provider creation.
+Kubernetes uses the same sandbox paths with uploaded copies, as described below.
 
 The shared `timeout_seconds`, `cpu`, `memory`, and `log_limit_bytes`
 default to 1800 seconds, two CPUs, 4 GiB, and 8 MiB.
@@ -460,9 +463,69 @@ the `agents[].id` value is a separate configured identifier.
 Do not put provider credentials or publishing credentials in this configuration.
 
 Codex requires an OpenAI Responses-compatible model provider and an explicit HTTPS `OPENAI_BASE_URL`
-in verified image metadata or `runner.environment`.
+in the image environment or `runner.environment`.
+For VM archives, the verified metadata supplies the image environment.
 The endpoint must have no embedded credentials, query, or fragment.
 Provider credentials stay in the operator-managed provider; do not put them in the environment configuration.
+
+## Kubernetes images and policies
+
+Select an existing named gateway and workspace with Kubernetes driver support.
+Set `execution.driver` to `kubernetes` and retain the model and read-only GitHub provider requirements above.
+LuthiAI never changes the cluster, gateway, providers, or their credentials.
+
+For each repository runner, replace `vm_archive` with `oci_image`:
+
+```json
+{
+  "agent": "claude",
+  "oci_image": "registry.example.com/reviewer@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+The registry reference must include an explicit registry and an immutable SHA-256 digest;
+moving tags are rejected.
+Configure exactly one image source per runner: `vm_archive` for VM or `oci_image` for Kubernetes.
+The gateway must be able to pull the image using its operator-managed registry access.
+
+Use the OCI image reference published in the chosen
+[review-images release](https://github.com/luthiai/review-images/releases).
+Kubernetes needs neither a local rootfs tar nor a separate metadata file.
+Set `oci_image` directly to the reference string;
+the former object with `reference`, `config_path`, or `config_sha256` fields is rejected.
+Choose an image compatible with the remote workload architecture, which may differ from the operator host.
+The sandbox inherits `config.Env` directly from the digest-pinned OCI image.
+Define an absolute `CLAUDE_CODE_EXECUTABLE` for Claude or `CODEX_PATH` for Codex in that image.
+After sandbox creation, LuthiAI reads only the selected reviewer's required non-secret executable
+and endpoint settings, validates them, and checks the CLI before starting the reviewer.
+Missing or invalid settings fail startup and trigger sandbox cleanup.
+Codex requires the same explicit HTTPS `OPENAI_BASE_URL` described above.
+Kubernetes passes only `runner.environment` and mandatory adapter settings through `--env`;
+these override image defaults.
+The restrictions on operator overrides of executable paths and mandatory adapter settings still apply.
+
+The image must provide `/bin/sh`, `/bin/chmod`, `tar`, Git, `/usr/bin/gh`,
+and the selected reviewer CLI.
+Its working directory must be `/sandbox` and allow the workload user to create the three input/output directories.
+Use a checksummed runner policy that permits workspace uploads,
+normally through `filesystem_policy.include_workdir: true`,
+and grants only the required system paths and network access.
+Keep network enforcement and provider restrictions enabled.
+
+Before dispatch, LuthiAI uploads only the round's checkout, trusted instructions, and initial output directory.
+It disables Git-ignore filtering so `.git` and ignored review inputs remain available.
+It removes write permissions from the uploaded checkout and instructions.
+These file modes prevent accidental writes, but the sandbox user owns the copies and can change their modes.
+On gateways that grant the whole working directory write access,
+a `read_only` entry for a child directory does not remove that write grant;
+filesystem permissions are fixed at startup and cannot be tightened after uploading.
+Treat uploaded files as disposable copies rather than enforced read-only mounts.
+Remote changes never modify the operator's originals.
+
+The reviewer response stream supplies the draft and log to the operator process.
+LuthiAI does not download or unpack the remote output directory;
+remote runtime files are discarded when its sandbox is deleted.
+Authorization, model validation, freshness checks, and lead decisions are the same for both drivers.
 
 ## GitHub credentials and HTTPS
 

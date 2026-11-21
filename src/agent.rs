@@ -3,7 +3,6 @@
 mod claude;
 mod codex;
 
-use crate::archive::StagedArchive;
 use crate::config::{AgentKind, AgentRunnerConfig, ExecutionConfig, valid_vm_absolute_path};
 use crate::openshell::OpenShell;
 use crate::review::RoundRecord;
@@ -21,9 +20,13 @@ pub use codex::CodexAdapter;
 
 /// Agent-specific behavior; workflow gates and sandbox lifecycle remain shared.
 pub trait AgentAdapter: Sync {
+    /// Non-secret image values needed to prepare the reviewer command.
+    fn image_environment_keys(&self) -> &'static [&'static str];
+    /// Mandatory sandbox settings supplied independently of the image defaults.
+    fn environment(&self) -> &'static [(&'static str, &'static str)];
     fn prepare(
         &self,
-        image: &StagedArchive,
+        image_environment: &BTreeMap<String, String>,
         runner: &AgentRunnerConfig,
     ) -> Result<PreparedAgent, AgentPreparationError>;
     fn tool_guidance(&self) -> &'static str;
@@ -40,47 +43,37 @@ pub fn adapter(kind: AgentKind) -> &'static dyn AgentAdapter {
 
 #[derive(Debug, Error)]
 pub enum AgentPreparationError {
-    #[error("VM image configuration lacks an absolute {variable} path")]
+    #[error("review image lacks an absolute {variable} path")]
     MissingExecutable { variable: &'static str },
     #[error(
-        "Codex requires an absolute HTTPS OPENAI_BASE_URL without credentials, query, or fragment in image metadata or runner.environment"
+        "Codex requires an absolute HTTPS OPENAI_BASE_URL without credentials, query, or fragment in the image environment or runner.environment"
     )]
     InvalidCodexEndpoint,
 }
 
-/// Executable and mandatory environment derived from a verified image and adapter.
+/// Reviewer executable and arguments derived from the inspected image environment.
 pub struct PreparedAgent {
     executable: String,
-    environment: BTreeMap<String, String>,
     arguments: Vec<OsString>,
 }
 
 impl PreparedAgent {
-    fn from_image(
-        image: &StagedArchive,
+    fn from_environment(
+        image_environment: &BTreeMap<String, String>,
         variable: &'static str,
-        environment: &[(&str, &str)],
     ) -> Result<Self, AgentPreparationError> {
-        let executable = image
-            .environment()
+        let executable = image_environment
             .get(variable)
             .filter(|value| valid_vm_absolute_path(value))
             .ok_or(AgentPreparationError::MissingExecutable { variable })?;
         Ok(Self {
             executable: executable.clone(),
             arguments: Vec::new(),
-            environment: environment
-                .iter()
-                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
-                .collect(),
         })
     }
 
     pub fn executable(&self) -> &str {
         &self.executable
-    }
-    pub fn environment(&self) -> &BTreeMap<String, String> {
-        &self.environment
     }
 }
 
@@ -406,7 +399,7 @@ mod tests {
     use crate::review::RoundId;
     use crate::{HeadSha, InputRevision, ObservedDiscussion, PrKey};
     use std::num::NonZeroU64;
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
 
     pub(super) fn test_round(kind: AgentKind) -> (ReviewConfig, RoundRecord) {
         let mut runner = crate::config::test_runner_json();
@@ -441,7 +434,7 @@ mod tests {
     }
 
     #[test]
-    fn adapters_require_their_own_verified_image_executable() {
+    fn adapters_require_their_own_absolute_image_executable() {
         for (kind, variable, executable) in [
             (
                 AgentKind::Claude,
@@ -454,27 +447,24 @@ mod tests {
             let choices = config.review_models_for(round.key()).unwrap();
             let runner = choices[0].agent().runner();
             for value in [None, Some("bin/relative"), Some("/usr/../bin/agent")] {
-                let image = StagedArchive::for_test(
-                    PathBuf::from("/tmp/image.tar"),
-                    value
-                        .map(|value| BTreeMap::from([(variable.into(), value.into())]))
-                        .unwrap_or_default(),
-                );
-                assert!(matches!(adapter(kind).prepare(&image, runner),
+                let environment = value
+                    .map(|value| BTreeMap::from([(variable.into(), value.into())]))
+                    .unwrap_or_default();
+                assert!(matches!(adapter(kind).prepare(&environment, runner),
                     Err(AgentPreparationError::MissingExecutable { variable: actual }) if actual == variable));
             }
-            let image = StagedArchive::for_test(
-                PathBuf::from("/tmp/image.tar"),
-                BTreeMap::from([
-                    (variable.into(), executable.into()),
-                    (
-                        "OPENAI_BASE_URL".into(),
-                        "https://gateway.example/v1".into(),
-                    ),
-                ]),
-            );
+            let environment = BTreeMap::from([
+                (variable.into(), executable.into()),
+                (
+                    "OPENAI_BASE_URL".into(),
+                    "https://gateway.example/v1".into(),
+                ),
+            ]);
             assert_eq!(
-                adapter(kind).prepare(&image, runner).unwrap().executable(),
+                adapter(kind)
+                    .prepare(&environment, runner)
+                    .unwrap()
+                    .executable(),
                 executable
             );
         }
@@ -496,7 +486,6 @@ mod tests {
         use crate::prompt_builder::{ReviewScope, ReviewTask};
         let prepared = PreparedAgent {
             executable: "/usr/bin/reviewer".into(),
-            environment: BTreeMap::new(),
             arguments: vec![],
         };
         let base = HeadSha::new("b".repeat(40)).unwrap();

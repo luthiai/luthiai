@@ -1,17 +1,20 @@
 //! Synchronous OpenShell 0.1.7 adapter for an operator-managed gateway.
 
-use crate::agent::{self, AgentPreparationError};
-use crate::archive::StagedArchive;
-use crate::config::{AgentRunnerConfig, Driver, ExecutionConfig};
+mod backend;
+
+use crate::agent::{self, AgentPreparationError, PreparedAgent};
+use crate::config::{AgentRunnerConfig, Driver, ExecutionConfig, valid_environment_entry};
+use crate::image::StagedImage;
 use crate::review::RoundRecord;
 use crate::sandbox_layout::{self, OPENSHELL_SANDBOX_NAME_LIMIT};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command, Output, Stdio};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -20,7 +23,7 @@ pub enum OpenShellError {
     AgentImage(#[from] AgentPreparationError),
     #[error("local VM review execution is unsupported on this platform")]
     PlatformUnsupported,
-    #[error("podman review execution is unsupported; configure the vm driver")]
+    #[error("podman review execution is unsupported; configure the vm or kubernetes driver")]
     PodmanUnsupported,
     #[error("OpenShell CLI must be version 0.1.7")]
     IncompatibleCli,
@@ -34,8 +37,10 @@ pub enum OpenShellError {
     Failed(&'static str),
     #[error("OpenShell sandbox name exceeds the {OPENSHELL_SANDBOX_NAME_LIMIT}-character limit")]
     SandboxNameTooLong,
-    #[error("gateway does not report vm driver support")]
-    VmUnavailable,
+    #[error("review image does not match the configured execution driver")]
+    ImageDriverMismatch,
+    #[error("gateway does not report {0} driver support")]
+    DriverUnavailable(&'static str),
     #[error("required provider {0} is unavailable")]
     ProviderUnavailable(String),
     #[error("GitHub provider profile must enforce read-only REST access to api.github.com:443")]
@@ -72,7 +77,7 @@ pub struct OpenShell<'a> {
     config: &'a ExecutionConfig,
 }
 
-/// Host directories mounted into one review sandbox.
+/// Private host directories mounted or uploaded into one review sandbox.
 pub struct SandboxMounts<'a> {
     checkout: &'a Path,
     instructions: &'a Path,
@@ -95,13 +100,7 @@ impl<'a> OpenShell<'a> {
     }
 
     pub fn preflight_gateway(&self) -> Result<(), OpenShellError> {
-        if !cfg!(unix) {
-            return Err(OpenShellError::PlatformUnsupported);
-        }
-        match self.config.driver() {
-            Driver::Vm => {}
-            Driver::Podman => return Err(OpenShellError::PodmanUnsupported),
-        }
+        backend::for_driver(self.config.driver())?.check_platform()?;
         let version = self.command(&["--version"], "version")?;
         if !version.status.success()
             || std::str::from_utf8(&version.stdout).ok().map(str::trim) != Some("openshell 0.1.7")
@@ -114,8 +113,10 @@ impl<'a> OpenShell<'a> {
             self.require_success(&["gateway", "info", "--output", "json"], "gateway info")?;
         let data: Value = serde_json::from_slice(&info.stdout)
             .map_err(|_| OpenShellError::InvalidResponse("gateway info"))?;
-        if !reports_vm(&data) {
-            return Err(OpenShellError::VmUnavailable);
+        if !reports_driver(&data, self.config.driver()) {
+            return Err(OpenShellError::DriverUnavailable(
+                self.config.driver().as_str(),
+            ));
         }
         let github = self.provider_profile(self.config.github_provider())?;
         if !github_profile_is_read_only(&github) {
@@ -325,7 +326,7 @@ impl<'a> OpenShell<'a> {
         &self,
         round: &RoundRecord,
         runner: &AgentRunnerConfig,
-        image: &StagedArchive,
+        image: &StagedImage,
         policy: &Path,
         mounts: &SandboxMounts<'_>,
     ) -> Result<(), OpenShellError> {
@@ -334,43 +335,36 @@ impl<'a> OpenShell<'a> {
         if !result.status.success() {
             return Err(OpenShellError::Failed("sandbox create"));
         }
-        Ok(())
+        backend::for_driver(self.config.driver())?.prepare_inputs(self, round, mounts)
     }
 
     pub fn create_args(
         &self,
         round: &RoundRecord,
         runner: &AgentRunnerConfig,
-        image: &StagedArchive,
+        image: &StagedImage,
         policy: &Path,
         mounts: &SandboxMounts<'_>,
     ) -> Result<Vec<OsString>, OpenShellError> {
-        if self.config.driver() != Driver::Vm {
-            return Err(OpenShellError::PodmanUnsupported);
+        let backend = backend::for_driver(self.config.driver())?;
+        backend.check_platform()?;
+        if image.driver() != self.config.driver() {
+            return Err(OpenShellError::ImageDriverMismatch);
         }
         if round.sandbox().len() > OPENSHELL_SANDBOX_NAME_LIMIT {
             return Err(OpenShellError::SandboxNameTooLong);
         }
-        let driver = serde_json::json!({"vm":{"mounts":[
-            {"type":"bind","source":mounts.checkout,"target":sandbox_layout::CHECKOUT_TARGET,"read_only":true},
-            {"type":"bind","source":mounts.instructions,"target":sandbox_layout::INSTRUCTIONS_TARGET,"read_only":true},
-            {"type":"bind","source":mounts.output,"target":sandbox_layout::OUTPUT_TARGET,"read_only":false}
-        ]}});
-        let driver = serde_json::to_string(&driver)
-            .map_err(|_| OpenShellError::InvalidResponse("mount configuration"))?;
         let mut args: Vec<OsString> = vec![
             "sandbox".into(),
             "create".into(),
             "--name".into(),
             round.sandbox().into(),
             "--from".into(),
-            image.path().as_os_str().to_owned(),
+            image.source().to_owned(),
             "--cpu".into(),
             self.config.cpu().into(),
             "--memory".into(),
             self.config.memory().into(),
-            "--driver-config-json".into(),
-            driver.into(),
             "--provider".into(),
             runner.model_provider().into(),
             "--provider".into(),
@@ -383,16 +377,25 @@ impl<'a> OpenShell<'a> {
             "--restart-policy".into(),
             "never".into(),
         ];
+        args.extend(backend.create_args(mounts)?);
         let mut environment = image.environment().clone();
         for (key, value) in runner.environment() {
             if environment.insert(key.clone(), value.clone()).is_some() {
                 return Err(OpenShellError::EnvironmentCollision(key.clone()));
             }
         }
-        let prepared = agent::adapter(runner.kind()).prepare(image, runner)?;
-        for (key, value) in prepared.environment() {
-            if environment.insert(key.clone(), value.clone()).is_some() {
-                return Err(OpenShellError::EnvironmentCollision(key.clone()));
+        let adapter = agent::adapter(runner.kind());
+        if image.driver() == Driver::Vm {
+            // VM metadata is available before creation; OCI defaults are inspected
+            // inside the running Kubernetes sandbox before reviewer dispatch.
+            let _prepared = adapter.prepare(image.environment(), runner)?;
+        }
+        for &(key, value) in adapter.environment() {
+            if environment
+                .insert(key.to_owned(), value.to_owned())
+                .is_some()
+            {
+                return Err(OpenShellError::EnvironmentCollision(key.to_owned()));
             }
         }
         if environment
@@ -410,6 +413,95 @@ impl<'a> OpenShell<'a> {
         args.push("--".into());
         args.extend(runner.hold_command().iter().map(OsString::from));
         Ok(args)
+    }
+
+    /// Resolve reviewer settings from verified VM metadata or the live OCI environment.
+    pub fn prepare_agent(
+        &self,
+        round: &RoundRecord,
+        runner: &AgentRunnerConfig,
+        image: &StagedImage,
+    ) -> Result<PreparedAgent, OpenShellError> {
+        if image.driver() != self.config.driver() || round.driver() != image.driver().as_str() {
+            return Err(OpenShellError::ImageDriverMismatch);
+        }
+        let adapter = agent::adapter(runner.kind());
+        let environment = match image.driver() {
+            Driver::Vm => image.environment().clone(),
+            Driver::Kubernetes => {
+                self.read_agent_environment(round, adapter.image_environment_keys())?
+            }
+            Driver::Podman => return Err(OpenShellError::PodmanUnsupported),
+        };
+        Ok(adapter.prepare(&environment, runner)?)
+    }
+
+    fn read_agent_environment(
+        &self,
+        round: &RoundRecord,
+        keys: &'static [&'static str],
+    ) -> Result<BTreeMap<String, String>, OpenShellError> {
+        const STEP: &str = "agent environment check";
+        const LIMIT: u64 = 64 * 1024;
+        // Keys come only from the compiled adapter. Quoted expansions keep values
+        // as data, and querying only these non-secret settings excludes credentials.
+        let expansions = keys
+            .iter()
+            .map(|key| format!("\"${key}\""))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let script = format!("printf '%s\\000' {expansions}");
+        let mut child = self
+            .exec_command(round, &["/bin/sh".into(), "-c".into(), script.into()])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .map_err(|source| OpenShellError::Launch { step: STEP, source })?;
+        let read = (|| {
+            let stdout = child
+                .stdout
+                .take()
+                .ok_or(OpenShellError::InvalidResponse(STEP))?;
+            let mut bytes = Vec::new();
+            stdout
+                .take(LIMIT + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|source| OpenShellError::Launch { step: STEP, source })?;
+            if bytes.len() as u64 > LIMIT {
+                return Err(OpenShellError::EnvironmentTooLarge);
+            }
+            Ok(bytes)
+        })();
+        if read.is_err() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let bytes = read?;
+        let status = child
+            .wait()
+            .map_err(|source| OpenShellError::Launch { step: STEP, source })?;
+        if !status.success() {
+            return Err(OpenShellError::Failed(STEP));
+        }
+        let values = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| text.strip_suffix('\0'))
+            .ok_or(OpenShellError::InvalidResponse(STEP))?
+            .split('\0')
+            .collect::<Vec<_>>();
+        if values.len() != keys.len() {
+            return Err(OpenShellError::InvalidResponse(STEP));
+        }
+        keys.iter()
+            .zip(values)
+            .map(|(&key, value)| {
+                if !valid_environment_entry(key, value) {
+                    return Err(OpenShellError::InvalidResponse(STEP));
+                }
+                Ok((key.to_owned(), value.to_owned()))
+            })
+            .collect()
     }
 
     pub fn check_agent_executable(
@@ -557,14 +649,14 @@ impl<'a> OpenShell<'a> {
     }
 }
 
-fn reports_vm(value: &Value) -> bool {
+fn reports_driver(value: &Value, expected: Driver) -> bool {
     value
         .get("compute_drivers")
         .and_then(Value::as_array)
         .is_some_and(|drivers| {
             drivers
                 .iter()
-                .any(|driver| driver.get("name").and_then(Value::as_str) == Some("vm"))
+                .any(|driver| driver.get("name").and_then(Value::as_str) == Some(expected.as_str()))
         })
 }
 
@@ -615,14 +707,22 @@ mod tests {
     #[cfg(unix)]
     use std::num::NonZeroU64;
     #[test]
-    fn driver_info_must_explicitly_report_vm() {
-        assert!(reports_vm(
-            &serde_json::json!({"compute_drivers":[{"name":"vm","capabilities":{"driver_name":"openshell-driver-vm"}}]})
+    fn driver_info_must_explicitly_report_the_configured_driver() {
+        assert!(reports_driver(
+            &serde_json::json!({"compute_drivers":[{"name":"vm","capabilities":{"driver_name":"openshell-driver-vm"}}]}),
+            Driver::Vm
         ));
-        assert!(!reports_vm(
-            &serde_json::json!({"compute_drivers":[{"name":"podman"}]})
+        assert!(!reports_driver(
+            &serde_json::json!({"compute_drivers":[{"name":"podman"}]}),
+            Driver::Vm
         ));
-        assert!(!reports_vm(&serde_json::json!({"status":"healthy"})));
+        assert!(!reports_driver(
+            &serde_json::json!({"status":"healthy"}),
+            Driver::Vm
+        ));
+        let kubernetes = serde_json::json!({"compute_drivers":[{"name":"kubernetes"}]});
+        assert!(reports_driver(&kubernetes, Driver::Kubernetes));
+        assert!(!reports_driver(&kubernetes, Driver::Vm));
         let readonly = serde_json::json!({"inference_capable":false,"endpoints":[{
             "host":"api.github.com","port":443,"protocol":"rest","access":"read-only","enforcement":"enforce"
         }]});
@@ -634,6 +734,280 @@ mod tests {
             provider_type(b"Provider:\n  Type: github-pr-readonly\n"),
             Some("github-pr-readonly".into())
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kubernetes_prepares_reviewers_from_the_inherited_environment() {
+        use crate::config::AgentKind;
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("openshell");
+        let calls = dir.path().join("calls");
+        let response = dir.path().join("response");
+        let failure = dir.path().join("failure");
+        fs::write(
+            &executable,
+            format!(
+                r#"#!/bin/sh
+printf '%s\n' "$*" >> '{}'
+if test -e '{}'; then echo PRIVATE_ENV_DETAIL >&2; exit 1; fi
+if test -e '{}'; then cat '{}'; exit; fi
+while test "$#" -gt 0 && test "$1" != --; do shift; done
+shift
+export CLAUDE_CODE_EXECUTABLE='/opt/image/claude$(false)'
+export CODEX_PATH='/opt/image/codex'
+export OPENAI_BASE_URL='https://image.example/v1'
+export OPENAI_API_KEY='PRIVATE_PROVIDER_CREDENTIAL'
+exec "$@"
+"#,
+                calls.display(),
+                failure.display(),
+                response.display(),
+                response.display()
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let mut raw = serde_json::json!({
+            "schema_version":7,
+            "execution": crate::config::test_execution_json(),
+            "models":[{"id":"model-alpha","coauthors":[]}],
+            "agents":[{"id":"reviewer","models":["model-alpha"],"runner":crate::config::test_runner_json()}],
+            "repositories":[{"name":"owner/repo","prompt_file":crate::config::test_prompt_file("review.md"),"review_models":["model-alpha"],"runners":[{
+                "agent":"reviewer","oci_image":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64))
+            }]}]
+        });
+        raw["execution"]["openshell"] = serde_json::json!(executable);
+        raw["execution"]["driver"] = "kubernetes".into();
+        for (kind, expected) in [
+            (AgentKind::Claude, "/opt/image/claude$(false)"),
+            (AgentKind::Codex, "/opt/image/codex"),
+        ] {
+            raw["agents"][0]["runner"]["kind"] = kind.as_str().into();
+            let config = ReviewConfig::from_json(
+                &serde_json::to_vec(&raw).unwrap(),
+                &dir.path().join("config.json"),
+            )
+            .unwrap();
+            let key = PrKey::new("owner/repo", 42).unwrap();
+            let choices = config.review_models_for(&key).unwrap();
+            let choice = &choices[0];
+            let runner = choice.agent().runner();
+            let record = RoundRecord::new(
+                RoundId::new("r-env").unwrap(),
+                key,
+                HeadSha::new("a".repeat(40)).unwrap(),
+                InputRevision::new(2).unwrap(),
+                ObservedDiscussion::new(NonZeroU64::new(7).unwrap(), vec![]).unwrap(),
+                choice,
+                1,
+            );
+            let image =
+                crate::image::stage_image(choice.image(), &dir.path().join("unused")).unwrap();
+            let shell = OpenShell::new(config.execution());
+            let prepared = shell.prepare_agent(&record, runner, &image).unwrap();
+            assert_eq!(prepared.executable(), expected);
+            if kind == AgentKind::Codex {
+                let command = agent::adapter(kind).command(&agent::AgentInvocation::new(
+                    &prepared,
+                    &record,
+                    "/sandbox/instructions/system-prompt.txt",
+                    "Review the PR.",
+                ));
+                assert!(command.iter().any(
+                    |arg| arg == "model_providers.review.base_url=\"https://image.example/v1\""
+                ));
+            }
+            let args = shell
+                .create_args(
+                    &record,
+                    runner,
+                    &image,
+                    Path::new("policy.yaml"),
+                    &SandboxMounts::new(dir.path(), dir.path(), dir.path()),
+                )
+                .unwrap();
+            assert!(!args.iter().any(|arg| {
+                arg.to_string_lossy().starts_with("CLAUDE_CODE_EXECUTABLE=")
+                    || arg.to_string_lossy().starts_with("CODEX_PATH=")
+                    || arg.to_string_lossy().starts_with("OPENAI_BASE_URL=")
+            }));
+            for &(key, value) in agent::adapter(kind).environment() {
+                assert!(
+                    args.windows(2)
+                        .any(|pair| pair[0] == "--env"
+                            && pair[1] == format!("{key}={value}").as_str())
+                );
+            }
+
+            let values = match kind {
+                AgentKind::Claude => b"\0".as_slice(),
+                AgentKind::Codex => b"\0https://image.example/v1\0".as_slice(),
+            };
+            for path in ["", "bin/relative", "/usr/../bin/reviewer"] {
+                let bytes = [path.as_bytes(), values].concat();
+                fs::write(&response, bytes).unwrap();
+                assert!(matches!(
+                    shell.prepare_agent(&record, runner, &image),
+                    Err(OpenShellError::AgentImage(
+                        AgentPreparationError::MissingExecutable { .. }
+                    ))
+                ));
+            }
+            if kind == AgentKind::Codex {
+                fs::write(
+                    &response,
+                    b"/usr/bin/codex\0https://credential@image.example/v1\0",
+                )
+                .unwrap();
+                assert!(matches!(
+                    shell.prepare_agent(&record, runner, &image),
+                    Err(OpenShellError::AgentImage(
+                        AgentPreparationError::InvalidCodexEndpoint
+                    ))
+                ));
+            }
+            for bytes in [
+                b"unterminated".as_slice(),
+                b"\xff\0",
+                b"/usr/bin/reviewer\n\0",
+                b"\0\0\0",
+            ] {
+                fs::write(&response, bytes).unwrap();
+                assert!(matches!(
+                    shell.prepare_agent(&record, runner, &image),
+                    Err(OpenShellError::InvalidResponse("agent environment check"))
+                ));
+            }
+            fs::write(&response, vec![b'x'; 64 * 1024 + 1]).unwrap();
+            assert!(matches!(
+                shell.prepare_agent(&record, runner, &image),
+                Err(OpenShellError::EnvironmentTooLarge)
+            ));
+            fs::write(&failure, b"").unwrap();
+            let error = match shell.prepare_agent(&record, runner, &image) {
+                Ok(_) => panic!("failed environment check was accepted"),
+                Err(error) => error,
+            };
+            assert!(matches!(
+                error,
+                OpenShellError::Failed("agent environment check")
+            ));
+            assert!(!error.to_string().contains("PRIVATE_ENV_DETAIL"));
+            fs::remove_file(&failure).unwrap();
+            fs::remove_file(&response).unwrap();
+        }
+        let recorded = fs::read_to_string(calls).unwrap();
+        assert!(recorded.contains("--no-login-shell"));
+        assert!(!recorded.contains("OPENAI_API_KEY"));
+        assert!(!recorded.contains("PRIVATE_PROVIDER_CREDENTIAL"));
+        assert!(!dir.path().join("unused").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn kubernetes_uploads_only_private_inputs_and_stops_on_transfer_failure() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("openshell");
+        let calls = dir.path().join("calls.txt");
+        let fail_upload = dir.path().join("fail-upload");
+        let gateway_info = dir.path().join("gateway.json");
+        fs::write(
+            &gateway_info,
+            r#"{"compute_drivers":[{"name":"kubernetes"}]}"#,
+        )
+        .unwrap();
+        fs::write(&executable, format!(
+            "#!/bin/sh\nprintf '%s|%s\\n' \"$PWD\" \"$*\" >> '{}'\ncase \"$*\" in\n*--version*) echo 'openshell 0.1.7';;\n*'gateway info'*) cat '{}' ;;\n*'provider get'*) for last do :; done; echo \"Type: $last\";;\n*'profile describe'*test-model-provider*) echo '{{\"inference_capable\":true}}';;\n*'profile describe'*test-github-provider*) echo '{{\"inference_capable\":false,\"endpoints\":[{{\"host\":\"api.github.com\",\"port\":443,\"protocol\":\"rest\",\"access\":\"read-only\",\"enforcement\":\"enforce\"}}]}}';;\n*'sandbox upload'*) if test -e '{}'; then echo private-adapter-output >&2; exit 1; fi;;\nesac\n",
+            calls.display(), gateway_info.display(), fail_upload.display(),
+        )).unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+        let policy = dir.path().join("policy.yaml");
+        fs::write(&policy, b"policy: test\n").unwrap();
+        let mut raw = serde_json::json!({
+            "schema_version":7,
+            "execution": crate::config::test_execution_json(),
+            "models":[{"id":"model-alpha","coauthors":[]}],
+            "agents":[{"id":"claude","models":["model-alpha"],"runner":crate::config::test_runner_json()}],
+            "repositories":[{"name":"owner/repo","prompt_file":crate::config::test_prompt_file("review.md"),"review_models":["model-alpha"],"runners":[{
+                "agent":"claude","oci_image":format!("registry.example.com/reviewer@sha256:{}","a".repeat(64))
+            }]}]
+        });
+        raw["execution"]["openshell"] = serde_json::json!(executable);
+        raw["execution"]["driver"] = "kubernetes".into();
+        raw["agents"][0]["runner"]["policy"] = serde_json::json!(policy);
+        raw["agents"][0]["runner"]["policy_sha256"] =
+            format!("{:x}", Sha256::digest(b"policy: test\n")).into();
+        let config = ReviewConfig::from_json(
+            &serde_json::to_vec(&raw).unwrap(),
+            &dir.path().join("config.json"),
+        )
+        .unwrap();
+        let shell = OpenShell::new(config.execution());
+        shell.preflight_gateway().unwrap();
+        let key = PrKey::new("owner/repo", 42).unwrap();
+        let choices = config.review_models_for(&key).unwrap();
+        let choice = &choices[0];
+        shell.preflight_runner(choice.agent().runner()).unwrap();
+        let record = RoundRecord::new(
+            RoundId::new("r-kube").unwrap(),
+            key,
+            HeadSha::new("a".repeat(40)).unwrap(),
+            InputRevision::new(2).unwrap(),
+            ObservedDiscussion::new(NonZeroU64::new(7).unwrap(), vec![]).unwrap(),
+            choice,
+            1,
+        );
+        let image =
+            crate::image::stage_image(choice.image(), &dir.path().join("archives")).unwrap();
+        let checkout = dir.path().join("checkout");
+        let instructions = dir.path().join("instructions");
+        let output = dir.path().join("output");
+        for path in [&checkout, &instructions, &output] {
+            fs::create_dir(path).unwrap();
+        }
+        let inputs = SandboxMounts::new(&checkout, &instructions, &output);
+        let args = shell
+            .create_args(&record, choice.agent().runner(), &image, &policy, &inputs)
+            .unwrap();
+        assert!(!args.iter().any(|arg| arg == "--driver-config-json"));
+        for path in [&checkout, &instructions, &output] {
+            assert!(!args.iter().any(|arg| arg == path));
+        }
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--from" && pair[1] == image.source())
+        );
+        shell
+            .create(&record, choice.agent().runner(), &image, &policy, &inputs)
+            .unwrap();
+        let recorded = fs::read_to_string(&calls).unwrap();
+        for (source, target) in [
+            (&checkout, sandbox_layout::CHECKOUT_TARGET),
+            (&instructions, sandbox_layout::INSTRUCTIONS_TARGET),
+            (&output, sandbox_layout::OUTPUT_TARGET),
+        ] {
+            assert!(recorded.lines().any(|line| line == format!("{}|--gateway test-gateway --workspace default --color never sandbox upload {} . {target} --no-git-ignore",source.canonicalize().unwrap().display(),record.sandbox())));
+        }
+        assert!(recorded.contains("/bin/chmod -R a-w -- /sandbox/src /sandbox/instructions"));
+        fs::write(&calls, b"").unwrap();
+        fs::write(&fail_upload, b"").unwrap();
+        let error = shell
+            .create(&record, choice.agent().runner(), &image, &policy, &inputs)
+            .unwrap_err();
+        assert!(matches!(error, OpenShellError::Failed("input upload")));
+        assert!(!error.to_string().contains("private-adapter-output"));
+        let recorded = fs::read_to_string(&calls).unwrap();
+        assert_eq!(recorded.lines().count(), 2);
+        assert!(!recorded.contains("sandbox exec"));
+        fs::write(&gateway_info, r#"{"compute_drivers":[{"name":"vm"}]}"#).unwrap();
+        assert!(matches!(
+            shell.preflight_gateway(),
+            Err(OpenShellError::DriverUnavailable("kubernetes"))
+        ));
     }
 
     #[cfg(unix)]
@@ -697,7 +1071,7 @@ mod tests {
             .create_args(
                 &record,
                 choice[0].agent().runner(),
-                &StagedArchive::for_test(
+                &StagedImage::for_test(
                     PathBuf::from("/tmp/archive.tar"),
                     std::collections::BTreeMap::from([
                         ("PATH".into(), "/usr/local/bin:/usr/bin".into()),
@@ -783,7 +1157,7 @@ mod tests {
             shell.create(
                 &oversized,
                 choice[0].agent().runner(),
-                &StagedArchive::for_test(
+                &StagedImage::for_test(
                     PathBuf::from("/tmp/archive.tar"),
                     std::collections::BTreeMap::new(),
                 ),
@@ -809,7 +1183,7 @@ mod tests {
             OpenShell::new(conflicting.execution()).create_args(
                 &record,
                 conflicting_choice[0].agent().runner(),
-                &StagedArchive::for_test(
+                &StagedImage::for_test(
                     PathBuf::from("/tmp/archive.tar"),
                     std::collections::BTreeMap::from([("PATH".into(), "/usr/bin".into())]),
                 ),

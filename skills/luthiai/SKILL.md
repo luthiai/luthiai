@@ -20,7 +20,7 @@ Use [references/cli.md](references/cli.md) for review commands, input sources, a
 ## Configure LuthiAI
 
 For setup, locate the effective configuration and state files and preserve unrelated settings.
-Use the operator's trusted gateway, provider, archive, policy, and model information;
+Use the operator's trusted gateway, provider, image, policy, and model information;
 report missing values instead of inventing them.
 Keep credentials out of configuration, project prompts, and repository files.
 Inspect the existing gateway with `gateway status`; setup never starts a review or grants lead decisions.

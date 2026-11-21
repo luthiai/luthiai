@@ -122,9 +122,9 @@ It returns a new preparation snapshot after saving the model and prompt choice.
 Unknown shared IDs return HTTP 422 without changing state.
 
 Blocked preparation returns a snapshot; blocked or stale validation returns HTTP 409.
-Configuration and archive verification failures return HTTP 422.
+Configuration and image verification failures return HTTP 422.
 GitHub failures can leave freshly observed inputs saved without a new model choice.
-The snapshots omit prompt contents, provider details, and archive paths.
+The snapshots omit prompt contents, provider details, image references, and local image paths.
 
 ### Start a review
 

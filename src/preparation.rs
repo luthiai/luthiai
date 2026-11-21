@@ -1,7 +1,7 @@
 //! Pure readiness and model-proposal decisions for a review round.
 
 use crate::config::{
-    AgentId, CoauthorIdentity, ConfigError, ModelId, PromptHash, ResolvedReviewModel, VmArchive,
+    AgentId, CoauthorIdentity, ConfigError, ModelId, PromptHash, ResolvedReviewModel, ReviewImage,
 };
 use crate::{Authorization, HeadSha, InputRevision, PrKey, ReviewRequest};
 use serde::{Deserialize, Serialize};
@@ -129,7 +129,7 @@ struct PreparedChoice {
     agent: AgentId,
     prompt_sha256: PromptHash,
     prompt: crate::config::PromptSelection,
-    vm_archive: VmArchive,
+    image: ReviewImage,
 }
 
 impl PreparedChoice {
@@ -139,7 +139,7 @@ impl PreparedChoice {
             agent: choice.agent().id().clone(),
             prompt_sha256: choice.prompt().hash().clone(),
             prompt: choice.prompt_selection().clone(),
-            vm_archive: choice.archive().clone(),
+            image: choice.image().clone(),
         }
     }
 
@@ -148,7 +148,7 @@ impl PreparedChoice {
             && self.prompt == *choice.prompt_selection()
             && self.agent == *choice.agent().id()
             && self.prompt_sha256 == *choice.prompt().hash()
-            && self.vm_archive == *choice.archive()
+            && self.image == *choice.image()
     }
 }
 
@@ -281,8 +281,8 @@ pub fn prepare(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::archive::VerifiedArchive;
     use crate::config::ReviewConfig;
+    use crate::image::VerifiedImage;
     use crate::{AuthorizationScope, HeadSha, InputRevision, ObservedDiscussion, PrKey, State};
     use std::num::NonZeroU64;
 
@@ -371,7 +371,7 @@ mod tests {
         assert_eq!(review_models[1].agent().id().as_str(), "codex");
         assert_eq!(result.readiness(), Readiness::ModelValidationRequired);
 
-        let verified = VerifiedArchive::for_test(review_models[0].archive());
+        let verified = VerifiedImage::for_test(review_models[0].image());
         state
             .validate_model(&result, &head, revision, &review_models[0], &verified)
             .unwrap();
@@ -481,7 +481,7 @@ mod tests {
             &empty,
         )
         .unwrap();
-        let verified = VerifiedArchive::for_test(review_models[0].archive());
+        let verified = VerifiedImage::for_test(review_models[0].image());
         state
             .validate_model(&prepared, &head, revision, &review_models[0], &verified)
             .unwrap();
@@ -657,7 +657,7 @@ mod tests {
             &empty,
         )
         .unwrap();
-        let verified = VerifiedArchive::for_test(repository[0].archive());
+        let verified = VerifiedImage::for_test(repository[0].image());
         assert!(matches!(
             state.validate_model(&prepared, &head, revision, &shared[0], &verified),
             Err(crate::ModelValidationError::ModelNotPrepared(_))

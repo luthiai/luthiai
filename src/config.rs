@@ -51,6 +51,14 @@ pub enum ConfigError {
     InvalidArchivePath(PathBuf),
     #[error("SHA-256 must contain 64 hexadecimal characters")]
     InvalidArchiveChecksum,
+    #[error(
+        "OCI image must name an explicit registry and be pinned with @sha256:<64 lowercase hexadecimal characters>"
+    )]
+    InvalidOciReference,
+    #[error(
+        "configure exactly one vm_archive or oci_image per runner, matching the execution driver"
+    )]
+    InvalidReviewImage,
     #[error("{0} has an empty or oversized review prompt (maximum 64 KiB)")]
     InvalidPrompt(String),
     #[error("{owner} prompt_file must name a regular file: {}", path.display())]
@@ -127,7 +135,7 @@ pub enum ConfigError {
     InvalidRunner(String),
     #[error("agent runner kind {0:?} is unsupported; expected claude or codex")]
     InvalidRunnerKind(String),
-    #[error("driver {0:?} is invalid; expected vm or podman")]
+    #[error("driver {0:?} is invalid; expected vm, kubernetes, or podman")]
     InvalidDriver(String),
     #[error(
         "publisher_login must be a valid GitHub login of 1-39 ASCII letters, digits, or hyphens"
@@ -332,7 +340,7 @@ impl TryFrom<RawCoauthorIdentity> for CoauthorIdentity {
     }
 }
 
-/// SHA-256 of the configured VM archive.
+/// SHA-256 of a configured image or image input file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String")]
 pub struct ArchiveHash(String);
@@ -447,6 +455,134 @@ impl TryFrom<RawVmArchive> for VmArchive {
     }
 }
 
+/// A registry image whose content, including its environment, is pinned by digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct OciImage {
+    reference: String,
+    digest: ArchiveHash,
+}
+
+impl TryFrom<String> for OciImage {
+    type Error = ConfigError;
+
+    fn try_from(reference: String) -> Result<Self, Self::Error> {
+        let Some((name, digest)) = reference.split_once("@sha256:") else {
+            return Err(ConfigError::InvalidOciReference);
+        };
+        let Some((registry, repository)) = name.split_once('/') else {
+            return Err(ConfigError::InvalidOciReference);
+        };
+        let repository = match repository.split_once(':') {
+            Some((repository, tag))
+                if !tag.is_empty()
+                    && tag.len() <= 128
+                    && (tag.as_bytes()[0].is_ascii_alphanumeric() || tag.starts_with('_'))
+                    && tag.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-')
+                    }) =>
+            {
+                repository
+            }
+            Some(_) => return Err(ConfigError::InvalidOciReference),
+            None => repository,
+        };
+        if reference.len() > 512
+            || !valid_oci_registry(registry)
+            || repository.split('/').any(|part| {
+                part.is_empty()
+                    || !part.as_bytes()[0].is_ascii_alphanumeric()
+                    || !part.as_bytes()[part.len() - 1].is_ascii_alphanumeric()
+                    || !part.bytes().all(|byte| {
+                        byte.is_ascii_lowercase()
+                            || byte.is_ascii_digit()
+                            || matches!(byte, b'.' | b'_' | b'-')
+                    })
+            })
+            || digest.len() != 64
+            || !digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+        {
+            return Err(ConfigError::InvalidOciReference);
+        }
+        let digest = ArchiveHash::new(digest.to_owned())?;
+        Ok(Self { reference, digest })
+    }
+}
+
+impl From<OciImage> for String {
+    fn from(image: OciImage) -> Self {
+        image.reference
+    }
+}
+
+fn valid_oci_registry(registry: &str) -> bool {
+    let (host, has_port) = match registry.split_once(':') {
+        Some((host, port)) if port.parse::<u16>().is_ok_and(|port| port != 0) => (host, true),
+        Some(_) => return false,
+        None => (registry, false),
+    };
+    (host.contains('.') || host == "localhost" || has_port)
+        && host.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
+}
+
+impl OciImage {
+    pub fn reference(&self) -> &str {
+        &self.reference
+    }
+}
+
+/// Driver-specific image identity retained in preparation and model validation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", try_from = "RawImage")]
+pub enum ReviewImage {
+    VmArchive(VmArchive),
+    OciImage(OciImage),
+}
+
+#[derive(Deserialize)]
+struct RawImage {
+    vm_archive: Option<VmArchive>,
+    oci_image: Option<OciImage>,
+}
+
+impl TryFrom<RawImage> for ReviewImage {
+    type Error = ConfigError;
+
+    fn try_from(raw: RawImage) -> Result<Self, Self::Error> {
+        match (raw.vm_archive, raw.oci_image) {
+            (Some(archive), None) => Ok(Self::VmArchive(archive)),
+            (None, Some(image)) => Ok(Self::OciImage(image)),
+            _ => Err(ConfigError::InvalidReviewImage),
+        }
+    }
+}
+
+impl ReviewImage {
+    pub fn checksum(&self) -> &ArchiveHash {
+        match self {
+            Self::VmArchive(archive) => archive.checksum(),
+            Self::OciImage(image) => &image.digest,
+        }
+    }
+
+    pub fn config_checksum(&self) -> Option<&ArchiveHash> {
+        match self {
+            Self::VmArchive(archive) => Some(archive.config_checksum()),
+            Self::OciImage(_) => None,
+        }
+    }
+}
+
 /// SHA-256 of trusted instructions or configuration, without storing private text in state.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String")]
@@ -514,6 +650,7 @@ pub struct ExecutionConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Driver {
     Vm,
+    Kubernetes,
     Podman,
 }
 
@@ -521,6 +658,7 @@ impl Driver {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Vm => "vm",
+            Self::Kubernetes => "kubernetes",
             Self::Podman => "podman",
         }
     }
@@ -571,6 +709,7 @@ impl TryFrom<RawExecution> for ExecutionConfig {
         }))?);
         let driver = match raw.driver.as_str() {
             "vm" => Driver::Vm,
+            "kubernetes" => Driver::Kubernetes,
             "podman" => Driver::Podman,
             _ => return Err(ConfigError::InvalidDriver(raw.driver)),
         };
@@ -642,7 +781,7 @@ fn valid_name(value: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
 }
 
-/// Executable paths inside the Linux VM use POSIX syntax on every host platform.
+/// Executable paths inside the Linux sandbox use POSIX syntax on every host platform.
 pub(crate) fn valid_vm_absolute_path(value: &str) -> bool {
     value.strip_prefix('/').is_some_and(|rest| {
         !rest.is_empty()
@@ -933,7 +1072,7 @@ pub struct RepositoryConfig {
 #[derive(Debug)]
 struct Runner {
     agent: AgentId,
-    archive: VmArchive,
+    image: ReviewImage,
 }
 
 #[derive(Debug)]
@@ -946,7 +1085,7 @@ pub struct ResolvedReviewModel<'a> {
     repository: &'a str,
     model: &'a Model,
     agent: &'a Agent,
-    archive: &'a VmArchive,
+    image: &'a ReviewImage,
     execution: &'a ExecutionConfig,
     project_prompt: &'a str,
     prompt_selection: PromptSelection,
@@ -978,8 +1117,8 @@ impl<'a> ResolvedReviewModel<'a> {
         self.agent
     }
 
-    pub fn archive(&self) -> &'a VmArchive {
-        self.archive
+    pub fn image(&self) -> &'a ReviewImage {
+        self.image
     }
     pub fn execution(&self) -> &'a ExecutionConfig {
         self.execution
@@ -1043,7 +1182,8 @@ struct RawPrompt {
 #[serde(deny_unknown_fields)]
 struct RawRunner {
     agent: String,
-    vm_archive: RawVmArchive,
+    vm_archive: Option<RawVmArchive>,
+    oci_image: Option<String>,
 }
 
 impl ReviewConfig {
@@ -1074,8 +1214,9 @@ impl ReviewConfig {
         }
         for repository in &mut raw.repositories {
             for runner in &mut repository.runners {
-                runner.vm_archive.path =
-                    resolve_host_path(&config_directory, &runner.vm_archive.path);
+                if let Some(archive) = &mut runner.vm_archive {
+                    archive.path = resolve_host_path(&config_directory, &archive.path);
+                }
             }
         }
         let mut hash = Sha256::new();
@@ -1084,6 +1225,7 @@ impl ReviewConfig {
         let directory_bytes = config_directory.as_os_str().as_encoded_bytes();
         hash.update((directory_bytes.len() as u64).to_be_bytes());
         hash.update(directory_bytes);
+        let execution = ExecutionConfig::try_from(raw.execution)?;
         let mut models = Vec::with_capacity(raw.models.len());
         let mut seen_models = HashSet::new();
         let mut seen_coauthors = HashMap::new();
@@ -1219,7 +1361,19 @@ impl ReviewConfig {
             let mut runners = Vec::new();
             for raw_runner in raw_repository.runners {
                 let agent = AgentId::new(raw_runner.agent)?;
-                let archive = VmArchive::try_from(raw_runner.vm_archive)?;
+                let image = match (
+                    execution.driver(),
+                    raw_runner.vm_archive,
+                    raw_runner.oci_image,
+                ) {
+                    (Driver::Vm | Driver::Podman, Some(archive), None) => {
+                        ReviewImage::VmArchive(VmArchive::try_from(archive)?)
+                    }
+                    (Driver::Kubernetes, None, Some(image)) => {
+                        ReviewImage::OciImage(OciImage::try_from(image)?)
+                    }
+                    _ => return Err(ConfigError::InvalidReviewImage),
+                };
                 if !seen_agents.contains(&agent) {
                     return Err(ConfigError::UnknownAgent {
                         repository: name,
@@ -1232,7 +1386,7 @@ impl ReviewConfig {
                         agent,
                     });
                 }
-                runners.push(Runner { agent, archive });
+                runners.push(Runner { agent, image });
             }
             repositories.push(RepositoryConfig {
                 name,
@@ -1247,7 +1401,7 @@ impl ReviewConfig {
             agents,
             repositories,
             prompts,
-            execution: ExecutionConfig::try_from(raw.execution)?,
+            execution,
             publisher_login: raw.publisher_login.map(|login| login.to_ascii_lowercase()),
             hash: PromptHash(format!("{:x}", hash.finalize())),
         };
@@ -1345,7 +1499,7 @@ impl ReviewConfig {
                             repository: &repository.name,
                             model,
                             agent,
-                            archive: &runner.archive,
+                            image: &runner.image,
                             execution: &self.execution,
                             project_prompt,
                             prompt_selection: selection.clone(),
@@ -1488,6 +1642,134 @@ pub(crate) fn normalize_email(value: String) -> Result<String, ConfigError> {
 
 #[cfg(test)]
 mod tests {
+    fn vm_archive(image: &super::ReviewImage) -> &super::VmArchive {
+        match image {
+            super::ReviewImage::VmArchive(archive) => archive,
+            _ => panic!("expected VM fixture"),
+        }
+    }
+
+    #[test]
+    fn kubernetes_images_are_pinned_without_metadata_and_bound_to_the_driver() {
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.json");
+        let mut raw = config_json();
+        raw["execution"]["driver"] = "kubernetes".into();
+        for runner in raw["repositories"][0]["runners"].as_array_mut().unwrap() {
+            runner.as_object_mut().unwrap().remove("vm_archive");
+            runner["oci_image"] =
+                format!("registry.example.com/reviewer@sha256:{}", "a".repeat(64)).into();
+        }
+        let load = |raw: &serde_json::Value| {
+            ReviewConfig::from_json(&serde_json::to_vec(raw).unwrap(), &config_path)
+        };
+        let config = load(&raw).unwrap();
+        assert_eq!(config.execution().driver(), Driver::Kubernetes);
+        let key = PrKey::new("owner/repo", 1).unwrap();
+        let choices = config.review_models_for(&key).unwrap();
+        let ReviewImage::OciImage(image) = choices[0].image() else {
+            panic!("expected OCI image")
+        };
+        assert_eq!(
+            image.reference(),
+            format!("registry.example.com/reviewer@sha256:{}", "a".repeat(64))
+        );
+        assert_eq!(choices[0].image().config_checksum(), None);
+        assert_eq!(choices[0].image().checksum().as_str(), "a".repeat(64));
+        let serialized = serde_json::to_value(choices[0].image()).unwrap();
+        assert_eq!(
+            serialized,
+            serde_json::json!({"oci_image": image.reference()})
+        );
+        assert_eq!(
+            serde_json::from_value::<ReviewImage>(serialized).unwrap(),
+            *choices[0].image()
+        );
+        for invalid in [
+            "registry.example.com/reviewer:latest".to_owned(),
+            "reviewer@sha256:abc".to_owned(),
+            format!("registry.example.com/reviewer@sha256:{}", "a".repeat(63)),
+            format!("registry.example.com/reviewer@sha256:{}", "A".repeat(64)),
+            format!(
+                "https://registry.example.com/reviewer@sha256:{}",
+                "a".repeat(64)
+            ),
+            format!(
+                "registry.example.com:bad/reviewer@sha256:{}",
+                "a".repeat(64)
+            ),
+            format!(
+                "user@registry.example.com/reviewer@sha256:{}",
+                "a".repeat(64)
+            ),
+            format!("registry..example.com/reviewer@sha256:{}", "a".repeat(64)),
+        ] {
+            let mut changed = raw.clone();
+            assert!(matches!(
+                OciImage::try_from(invalid.clone()),
+                Err(ConfigError::InvalidOciReference)
+            ));
+            assert!(serde_json::from_value::<OciImage>(invalid.clone().into()).is_err());
+            changed["repositories"][0]["runners"][0]["oci_image"] = invalid.into();
+            assert!(matches!(
+                load(&changed),
+                Err(ConfigError::InvalidOciReference)
+            ));
+        }
+        for reference in [
+            format!(
+                "registry.example.com/reviewer:release@sha256:{}",
+                "a".repeat(64)
+            ),
+            format!("registry:5000/team/reviewer@sha256:{}", "a".repeat(64)),
+        ] {
+            let mut changed = raw.clone();
+            changed["repositories"][0]["runners"][0]["oci_image"] = reference.into();
+            load(&changed).unwrap();
+        }
+        for invalid in [
+            serde_json::json!({"reference": image.reference()}),
+            serde_json::json!({"reference": image.reference(), "config_path": "image.config.json", "config_sha256": "b".repeat(64)}),
+            serde_json::json!(true),
+        ] {
+            let mut changed = raw.clone();
+            changed["repositories"][0]["runners"][0]["oci_image"] = invalid.clone();
+            assert!(matches!(load(&changed), Err(ConfigError::Json(_))));
+            assert!(serde_json::from_value::<OciImage>(invalid).is_err());
+        }
+        let mut changed = raw.clone();
+        changed["execution"]["driver"] = "vm".into();
+        assert!(matches!(
+            load(&changed),
+            Err(ConfigError::InvalidReviewImage)
+        ));
+        let mut changed = config_json();
+        changed["execution"]["driver"] = "kubernetes".into();
+        assert!(matches!(
+            load(&changed),
+            Err(ConfigError::InvalidReviewImage)
+        ));
+        let mut changed = raw.clone();
+        changed["repositories"][0]["runners"][0]["vm_archive"] =
+            config_json()["repositories"][0]["runners"][0]["vm_archive"].clone();
+        assert!(matches!(
+            load(&changed),
+            Err(ConfigError::InvalidReviewImage)
+        ));
+        let mut changed = raw.clone();
+        changed["repositories"][0]["runners"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("oci_image");
+        assert!(matches!(
+            load(&changed),
+            Err(ConfigError::InvalidReviewImage)
+        ));
+        let mut changed = raw;
+        changed["repositories"][0]["runners"][0]["oci_image"] =
+            format!("registry.example.com/reviewer@sha256:{}", "c".repeat(64)).into();
+        assert_ne!(config.hash(), load(&changed).unwrap().hash());
+    }
     use super::*;
 
     #[test]
@@ -1842,14 +2124,14 @@ mod tests {
         );
         let runners = &config.repositories[0].runners;
         assert_eq!(
-            runners[0].archive.path(),
+            vm_archive(&runners[0].image).path(),
             directory.path().join("images/codex.tar")
         );
         assert_eq!(
-            runners[0].archive.config_path(),
+            vm_archive(&runners[0].image).config_path(),
             directory.path().join("images/codex.tar.config.json")
         );
-        assert_eq!(runners[1].archive.path(), absolute_archive);
+        assert_eq!(vm_archive(&runners[1].image).path(), absolute_archive);
         assert_eq!(config.repositories[0].prompt, "Project guidance.\n");
     }
 
@@ -1899,8 +2181,8 @@ mod tests {
         assert_ne!(a.execution.hash(), b.execution.hash());
         assert_ne!(a.agents[0].runner.hash(), b.agents[0].runner.hash());
         assert_ne!(
-            a.repositories[0].runners[0].archive.path(),
-            b.repositories[0].runners[0].archive.path()
+            vm_archive(&a.repositories[0].runners[0].image).path(),
+            vm_archive(&b.repositories[0].runners[0].image).path()
         );
         assert_eq!(a.repositories[0].prompt, b.repositories[0].prompt);
     }
@@ -2147,11 +2429,10 @@ mod tests {
             include_str!("../tests/fixtures/prompts/review.md")
         );
         assert_eq!(review_models[0].prompt().hash().as_str().len(), 64);
-        assert!(review_models[0].archive().path().ends_with("claude.tar"));
-        assert_eq!(
-            review_models[0].archive().checksum().as_str(),
-            "a".repeat(64)
+        assert!(
+            matches!(review_models[0].image(), ReviewImage::VmArchive(archive) if archive.path().ends_with("claude.tar"))
         );
+        assert_eq!(review_models[0].image().checksum().as_str(), "a".repeat(64));
         assert!(review_models[0].model().matches_coauthor(&HashSet::from([
             CoauthorIdentity::new("Model Alpha", "MODEL@example.com").unwrap()
         ])));

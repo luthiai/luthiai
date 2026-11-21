@@ -5,6 +5,7 @@ pub mod archive;
 pub mod checkout;
 pub mod config;
 pub mod github;
+pub mod image;
 mod model;
 pub mod openshell;
 pub mod preparation;

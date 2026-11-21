@@ -213,7 +213,8 @@ pub struct RoundRecord {
     // Historical name: compiled system/agent guidance, task templates, and output schema.
     format_sha256: PromptHash,
     archive_sha256: ArchiveHash,
-    archive_config_sha256: ArchiveHash,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archive_config_sha256: Option<ArchiveHash>,
     execution_sha256: PromptHash,
     runner_sha256: PromptHash,
     /// Older rounds predate explicit daemon-owned task scope.
@@ -266,8 +267,8 @@ impl RoundRecord {
             github_provider: execution.github_provider().to_owned(),
             prompt_sha256: choice.prompt().hash().clone(),
             format_sha256: crate::prompt_builder::rules_hash(choice.agent().runner().kind()),
-            archive_sha256: choice.archive().checksum().clone(),
-            archive_config_sha256: choice.archive().config_checksum().clone(),
+            archive_sha256: choice.image().checksum().clone(),
+            archive_config_sha256: choice.image().config_checksum().cloned(),
             execution_sha256: execution.hash().clone(),
             runner_sha256: runner.hash().clone(),
             task: None,
@@ -349,8 +350,8 @@ impl RoundRecord {
     pub fn archive_hash(&self) -> &ArchiveHash {
         &self.archive_sha256
     }
-    pub fn archive_config_hash(&self) -> &ArchiveHash {
-        &self.archive_config_sha256
+    pub fn archive_config_hash(&self) -> Option<&ArchiveHash> {
+        self.archive_config_sha256.as_ref()
     }
     pub fn execution_hash(&self) -> &PromptHash {
         &self.execution_sha256
@@ -529,6 +530,13 @@ impl RoundRecord {
     }
     pub(crate) fn validate(&self) -> Result<(), RoundStateError> {
         if self.sandbox != sandbox_name(&self.id)
+            || match self.driver.as_str() {
+                "vm" | "podman" => self.archive_config_sha256.is_none(),
+                // Historical OCI rounds retain their sidecar hash for audit.
+                // New rounds omit it and must match the current image identity.
+                "kubernetes" => false,
+                _ => true,
+            }
             || self.created_at == 0
             || (self.status == RoundStatus::Starting && self.dispatched_at.is_some())
             || (self.status == RoundStatus::Running && self.dispatched_at.is_none())

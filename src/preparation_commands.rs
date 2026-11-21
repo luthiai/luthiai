@@ -3,12 +3,13 @@
 use crate::storage;
 use luthiai::{
     Authorization, ModelValidationError, PrKey, RefreshOutcome, ReviewRequest, StateError,
-    archive::{self, ArchiveError},
+    archive::ArchiveError,
     config::{
         AgentId, AgentKind, CiCheckName, ConfigError, ModelId, PromptHash, PromptSelection,
-        ResolvedReviewModel, ReviewConfig, VmArchive,
+        ResolvedReviewModel, ReviewConfig, ReviewImage,
     },
     github::{GithubClient, GithubError, PullRequest, checks::CheckSummary},
+    image,
     preparation::Preparation,
     round::{self, ModelSelection, RoundError},
 };
@@ -77,7 +78,7 @@ pub struct PreparedModel {
     model_provider: String,
     prompt_sha256: PromptHash,
     runner_sha256: PromptHash,
-    archive: VmArchive,
+    image: ReviewImage,
 }
 
 impl PreparedModel {
@@ -89,7 +90,7 @@ impl PreparedModel {
             model_provider: choice.agent().runner().model_provider().to_owned(),
             prompt_sha256: choice.prompt().hash().clone(),
             runner_sha256: choice.agent().runner().hash().clone(),
-            archive: choice.archive().clone(),
+            image: choice.image().clone(),
         }
     }
     pub fn model(&self) -> &ModelId {
@@ -110,8 +111,8 @@ impl PreparedModel {
     pub fn runner_sha256(&self) -> &PromptHash {
         &self.runner_sha256
     }
-    pub fn archive(&self) -> &VmArchive {
-        &self.archive
+    pub fn image(&self) -> &ReviewImage {
+        &self.image
     }
 }
 
@@ -247,7 +248,7 @@ pub fn prepare(
         return Err(PrepareError::StaleRules);
     }
     if let Some(selected) = selection {
-        let verified = archive::verify_archive(report.resolved().archive())?;
+        let verified = image::verify_image(report.resolved().image())?;
         let _lock = storage::lock(state_file)?;
         let mut current = storage::load(state_file)?;
         check_rules(
