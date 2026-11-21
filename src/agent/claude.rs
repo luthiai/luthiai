@@ -4,8 +4,8 @@ use super::{
     AgentAdapter, AgentInvocation, AgentPreparationError, AgentRun, AgentRunError, Log,
     PreparedAgent, capture_lines,
 };
-use crate::archive::StagedArchive;
 use crate::config::AgentRunnerConfig;
+use crate::image::StagedImage;
 use crate::review::RoundRecord;
 use crate::sandbox_layout;
 use serde_json::Value;
@@ -20,7 +20,7 @@ pub struct ClaudeAdapter;
 impl AgentAdapter for ClaudeAdapter {
     fn prepare(
         &self,
-        image: &StagedArchive,
+        image: &StagedImage,
         _runner: &AgentRunnerConfig,
     ) -> Result<PreparedAgent, AgentPreparationError> {
         PreparedAgent::from_image(
@@ -510,7 +510,7 @@ mod tests {
         let shell = OpenShell::new(config.execution());
         let prepared = ClaudeAdapter
             .prepare(
-                &StagedArchive::for_test(
+                &StagedImage::for_test(
                     std::path::PathBuf::from("/tmp/image.tar"),
                     std::collections::BTreeMap::from([(
                         "CLAUDE_CODE_EXECUTABLE".into(),
@@ -567,7 +567,7 @@ mod tests {
         let shell = OpenShell::new(config.execution());
         let prepared = ClaudeAdapter
             .prepare(
-                &StagedArchive::for_test(
+                &StagedImage::for_test(
                     std::path::PathBuf::from("/tmp/image.tar"),
                     std::collections::BTreeMap::from([(
                         "CLAUDE_CODE_EXECUTABLE".into(),

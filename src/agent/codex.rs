@@ -1,11 +1,11 @@
-//! Codex CLI invocation, VM-bound tool access, and JSON event interpretation.
+//! Codex CLI invocation, sandboxed tool access, and JSON event interpretation.
 
 use super::{
     AgentAdapter, AgentInvocation, AgentPreparationError, AgentRun, AgentRunError, Log,
     PreparedAgent, capture_lines,
 };
-use crate::archive::StagedArchive;
 use crate::config::AgentRunnerConfig;
+use crate::image::StagedImage;
 use crate::sandbox_layout;
 use serde_json::Value;
 use std::collections::HashSet;
@@ -19,14 +19,14 @@ pub struct CodexAdapter;
 impl AgentAdapter for CodexAdapter {
     fn prepare(
         &self,
-        image: &StagedArchive,
+        image: &StagedImage,
         runner: &AgentRunnerConfig,
     ) -> Result<PreparedAgent, AgentPreparationError> {
         let mut prepared = PreparedAgent::from_image(
             image,
             "CODEX_PATH",
             // The CLI requires its home to exist before startup. This private
-            // per-round directory exists on both sides of the VM mount.
+            // per-round directory is mounted or uploaded before execution.
             &[("CODEX_HOME", sandbox_layout::OUTPUT_TARGET)],
         )?;
         let endpoint = runner
@@ -225,7 +225,7 @@ mod tests {
         let choices = config.review_models_for(round.key()).unwrap();
         let prepared = CodexAdapter
             .prepare(
-                &StagedArchive::for_test(
+                &StagedImage::for_test(
                     std::path::PathBuf::from("/tmp/image.tar"),
                     std::collections::BTreeMap::from([
                         ("CODEX_PATH".into(), "/usr/bin/codex".into()),
@@ -325,7 +325,7 @@ mod tests {
                 environment.insert("OPENAI_BASE_URL".into(), endpoint.into());
             }
             let image =
-                StagedArchive::for_test(std::path::PathBuf::from("/tmp/image.tar"), environment);
+                StagedImage::for_test(std::path::PathBuf::from("/tmp/image.tar"), environment);
             assert!(matches!(
                 CodexAdapter.prepare(&image, choices[0].agent().runner()),
                 Err(AgentPreparationError::InvalidCodexEndpoint)

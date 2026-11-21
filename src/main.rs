@@ -631,16 +631,18 @@ fn run_prepare(
     println!("  model provider: {}", resolved.model_provider());
     println!("  prompt SHA-256: {}", resolved.prompt_sha256());
     println!("  runner SHA-256: {}", resolved.runner_sha256());
-    println!("  VM archive: {}", resolved.archive().path().display());
-    println!("  archive SHA-256: {}", resolved.archive().checksum());
-    println!(
-        "  VM metadata: {}",
-        resolved.archive().config_path().display()
-    );
-    println!(
-        "  metadata SHA-256: {}",
-        resolved.archive().config_checksum()
-    );
+    match resolved.image() {
+        luthiai::config::ReviewImage::VmArchive(archive) => {
+            println!("  VM archive: {}", archive.path().display());
+            println!("  archive SHA-256: {}", archive.checksum());
+            println!("  VM metadata: {}", archive.config_path().display());
+        }
+        luthiai::config::ReviewImage::OciImage(image) => {
+            println!("  OCI image: {}", image.reference());
+            println!("  OCI metadata: {}", image.config_path().display());
+        }
+    }
+    println!("  metadata SHA-256: {}", resolved.image().config_checksum());
     println!("  readiness: {}", preparation.readiness());
     Ok(())
 }

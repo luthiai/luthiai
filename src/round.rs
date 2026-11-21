@@ -1,6 +1,5 @@
 //! Reusable orchestration of review preparation across the CLI and future daemon.
 
-use crate::archive::{self, ArchiveError};
 use crate::config::{ConfigError, ModelId, PromptSelection, ResolvedReviewModel, ReviewConfig};
 use crate::github::checks::CheckSummary;
 use crate::github::discussion::PullObservation;
@@ -9,6 +8,7 @@ use crate::preparation::{self, Preparation, PreparationError};
 use crate::{
     HeadSha, InputRevision, ModelValidationError, PrKey, RefreshOutcome, State, StateError,
 };
+use crate::{archive::ArchiveError, image};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -213,7 +213,7 @@ pub fn prepare<'a>(
     let mut validation_changed = false;
     if let (Some(choice), Some(index)) = (selection, selected_index) {
         let chosen = &models[index];
-        let verified = archive::verify_archive(chosen.archive())?;
+        let verified = image::verify_image(chosen.image())?;
         validation_changed = state.validate_model(
             &preparation,
             &choice.head,
@@ -248,7 +248,7 @@ pub fn prepare<'a>(
         })
         .ok_or_else(|| ConfigError::NoReviewModels(key.repository().to_owned()))?;
     if preparation.readiness().permits_validation() && verified_index != Some(resolved_index) {
-        let _verified = archive::verify_archive(models[resolved_index].archive())?;
+        let _verified = image::verify_image(models[resolved_index].image())?;
     }
     let resolved = models.remove(resolved_index);
     Ok(RoundPreparation {

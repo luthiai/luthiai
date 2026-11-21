@@ -3,8 +3,8 @@
 mod claude;
 mod codex;
 
-use crate::archive::StagedArchive;
 use crate::config::{AgentKind, AgentRunnerConfig, ExecutionConfig, valid_vm_absolute_path};
+use crate::image::StagedImage;
 use crate::openshell::OpenShell;
 use crate::review::RoundRecord;
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ pub use codex::CodexAdapter;
 pub trait AgentAdapter: Sync {
     fn prepare(
         &self,
-        image: &StagedArchive,
+        image: &StagedImage,
         runner: &AgentRunnerConfig,
     ) -> Result<PreparedAgent, AgentPreparationError>;
     fn tool_guidance(&self) -> &'static str;
@@ -40,7 +40,7 @@ pub fn adapter(kind: AgentKind) -> &'static dyn AgentAdapter {
 
 #[derive(Debug, Error)]
 pub enum AgentPreparationError {
-    #[error("VM image configuration lacks an absolute {variable} path")]
+    #[error("image configuration lacks an absolute {variable} path")]
     MissingExecutable { variable: &'static str },
     #[error(
         "Codex requires an absolute HTTPS OPENAI_BASE_URL without credentials, query, or fragment in image metadata or runner.environment"
@@ -57,7 +57,7 @@ pub struct PreparedAgent {
 
 impl PreparedAgent {
     fn from_image(
-        image: &StagedArchive,
+        image: &StagedImage,
         variable: &'static str,
         environment: &[(&str, &str)],
     ) -> Result<Self, AgentPreparationError> {
@@ -454,7 +454,7 @@ mod tests {
             let choices = config.review_models_for(round.key()).unwrap();
             let runner = choices[0].agent().runner();
             for value in [None, Some("bin/relative"), Some("/usr/../bin/agent")] {
-                let image = StagedArchive::for_test(
+                let image = StagedImage::for_test(
                     PathBuf::from("/tmp/image.tar"),
                     value
                         .map(|value| BTreeMap::from([(variable.into(), value.into())]))
@@ -463,7 +463,7 @@ mod tests {
                 assert!(matches!(adapter(kind).prepare(&image, runner),
                     Err(AgentPreparationError::MissingExecutable { variable: actual }) if actual == variable));
             }
-            let image = StagedArchive::for_test(
+            let image = StagedImage::for_test(
                 PathBuf::from("/tmp/image.tar"),
                 BTreeMap::from([
                     (variable.into(), executable.into()),

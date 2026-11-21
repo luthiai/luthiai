@@ -15,7 +15,7 @@ for example to emphasize project conventions or specific areas of concern.
 Each review is started explicitly through the CLI or GUI.
 
 A separate reviewer runs in a secure sandbox managed by OpenShell,
-with read-only access to the PR code and GitHub.
+with isolated PR code and read-only access to GitHub.
 
 Each generated review stays private until the lead publishes it unchanged;
 the lead can also reject it.
@@ -63,7 +63,7 @@ Ask your assistant to set up or change:
   and the co-author signatures used to suggest a different model from one credited in the PR's commits.
 - **Reviewers**: which programs run those models inside OpenShell, currently Claude or Codex.
 - **GitHub access**: access to private repositories and the account used to publish reviews.
-- **Sandbox setup and limits**: the OpenShell gateway, providers, VM images,
+- **Sandbox setup and limits**: the OpenShell gateway, providers, reviewer images,
   CPU, memory, review duration, reviewer turns, and log size limits.
 - **Local storage**: where configuration and review state are saved;
   drafts and logs live alongside the state file.
@@ -71,12 +71,13 @@ Ask your assistant to set up or change:
 For example: “Add my repository, emphasize security in its reviews, and limit each review to 5 minutes.”
 Your assistant uses the [LuthiAI configuration guide](skills/luthiai/references/configuration.md) to apply these choices.
 
-The gateway operator supplies an already-running OpenShell gateway and compatible VM images;
+The gateway operator supplies an already-running OpenShell gateway and compatible reviewer images;
 this may be the lead developer or another administrator.
-Reviewer archives and their OCI metadata are published in
+Reviewer OCI images, VM archives, and their OCI metadata are published in
 [luthiai/review-images releases](https://github.com/luthiai/review-images/releases).
 Follow the [VM image setup guide](skills/luthiai/references/configuration.md#vm-images-and-policies)
-to select a release and configure its verified downloads.
+or [remote Kubernetes setup guide](skills/luthiai/references/configuration.md#kubernetes-images-and-policies)
+to select a release and configure its verified inputs.
 Configuration stays in private local files shared by the GUI and CLI.
 
 ### Refine review prompts
@@ -132,8 +133,11 @@ You can close or reload the browser tab at any time without interrupting reviews
 ### Current limitations
 
 PRs must be registered explicitly; LuthiAI does not discover requests or schedule reviews automatically.
-The review runner currently supports local OpenShell VM gateways on macOS and Linux;
-remote gateway deployment is not implemented.
+The review runner supports local OpenShell VM gateways on macOS and Linux
+and existing remote Kubernetes gateways.
+Kubernetes reviews use disposable uploaded copies of the code and instructions.
+Their file permissions discourage writes, but the reviewer can change those remote copies;
+changes are never copied back to the operator's files.
 
 ## How reviews work
 

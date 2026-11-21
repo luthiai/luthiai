@@ -167,9 +167,12 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
   Keep review mount targets, access modes, and mandatory lifecycle restrictions fixed in code.
   Keep generated sandbox names within OpenShell's 19-character limit
   while preserving case-sensitive round identities.
-  Read the driver type from configuration; support only `vm` for now
-  and report `podman` as unsupported or unknown names as invalid
-  before creating a sandbox.
+  Select `vm` or `kubernetes` from configuration through the sandbox backend trait;
+  report `podman` as unsupported or unknown names as invalid before creating a sandbox.
+  For Kubernetes, upload only private round inputs, preserve Git metadata and ignored files,
+  and remove input write permissions without treating file modes as an isolation boundary.
+  Capture the final response locally; never copy remote changes back to input files
+  or unpack a reviewer-controlled output directory on the host.
   Manage review sandboxes, not the gateway, its providers, or their credentials and rotation.
 - Pin OCI images by digest.
   For VM archives and their separate OCI metadata, reject symlinks,
@@ -216,6 +219,7 @@ If the proposed approach is an anti-pattern, explain why and offer an idiomatic 
 - For documentation, use semantic line breaks.
 - Use generic examples in documentation and tests.
   Treat user-provided real-world examples as context unless their inclusion is requested.
+  Keep private operator platform names, endpoints, and provider details out of repository content and commit messages.
 - For GitHub Actions in workflows, pin each `uses:` action to a full commit SHA.
   Use the latest stable release and annotate the pin with its version.
 - Use the newest available explicit OS version labels for GitHub-hosted runners; avoid `*-latest`.
